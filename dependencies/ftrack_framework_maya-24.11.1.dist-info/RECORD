@@ -1,0 +1,10 @@
+ftrack_framework_maya-24.11.1.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+ftrack_framework_maya-24.11.1.dist-info/METADATA,sha256=aO6tmRfpNmt3Ra0SuHF2rgDupfbLnaee_MotblF3vJk,2853
+ftrack_framework_maya-24.11.1.dist-info/RECORD,,
+ftrack_framework_maya-24.11.1.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+ftrack_framework_maya-24.11.1.dist-info/WHEEL,sha256=Zb28QaM1gQi8f4VCBhsUklF61CTlNYfs9YAZn-TOGFk,88
+ftrack_framework_maya-24.11.1.dist-info/direct_url.json,sha256=FZt95SXIzAes2dvl8CWxGqJsySIe1QZdmK6kC7kqVxs,328
+ftrack_framework_maya/__init__.py,sha256=U60IuWhBgG6eqUkuHRR4Yec8figx__9hQPFQRLochrU,7337
+ftrack_framework_maya/__pycache__/__init__.cpython-37.pyc,,
+ftrack_framework_maya/utils/__init__.py,sha256=2ImnfXQEnDkiBXRkV3GfGw24Dxee0CuFCZJkJdFiLHk,1864
+ftrack_framework_maya/utils/__pycache__/__init__.cpython-37.pyc,,

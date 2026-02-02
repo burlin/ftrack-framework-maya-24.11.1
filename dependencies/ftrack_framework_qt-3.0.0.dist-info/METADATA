@@ -1,0 +1,34 @@
+Metadata-Version: 2.1
+Name: ftrack-framework-qt
+Version: 3.0.0
+Summary: ftrack framework qt library
+Home-page: https://ftrack.com
+License: Apache-2.0
+Author: ftrack Integrations Team
+Author-email: integrations@backlight.co
+Requires-Python: >=3.7,<3.12
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Provides-Extra: framework-libs
+Provides-Extra: ftrack-libs
+Provides-Extra: pyside2
+Provides-Extra: pyside6
+Requires-Dist: PySide2 (>=5.13.2,<6.0.0) ; extra == "pyside2"
+Requires-Dist: PySide6 (>=6.5,<7.0) ; extra == "pyside6"
+Requires-Dist: ftrack-constants (>=3.0.0,<4.0.0) ; extra == "ftrack-libs"
+Requires-Dist: ftrack-framework-core (>=3.0.0,<4.0.0) ; extra == "framework-libs"
+Requires-Dist: ftrack-qt (>=3.0.0,<4.0.0) ; extra == "ftrack-libs"
+Requires-Dist: ftrack-utils (>=3.0.0,<4.0.0) ; extra == "ftrack-libs"
+Project-URL: Repository, https://github.com/ftrackhq/integrations/tree/main/libs/framework-qt
+Description-Content-Type: text/markdown
+
+# Framework Qt
+
+This is the ftrack integrations framework-qt library. 
+Base dialogs and widgets mixins used in the ftrack integrations framework should be found here.
+
