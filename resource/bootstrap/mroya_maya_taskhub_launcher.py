@@ -264,6 +264,21 @@ def create_publisher_node(*_args, **_kwargs) -> None:
         print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
 
 
+def open_ftrack_input_window_callback(*_args, **_kwargs) -> None:
+    """Open Ftrack Input window (finput-like loader) from menu."""
+    _bootstrap_python_paths()
+
+    try:
+        from ftrack_inout.browser.dcc.maya import open_ftrack_input_window
+        if open_ftrack_input_window:
+            open_ftrack_input_window()
+            print("[mroya_maya_taskhub] ✅ Opened Ftrack Input window")
+        else:
+            print("[mroya_maya_taskhub] ❌ Ftrack Input not available (PySide/Maya)")
+    except Exception as exc:
+        import traceback
+        print(f"[mroya_maya_taskhub] ❌ Failed to open Ftrack Input: {exc}")
+        print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
 
 
 # ============================================================================
@@ -510,7 +525,7 @@ def install_menu() -> None:
         # Remove old items if they already existed.
         existing_items = cmds.menu(menu, q=True, itemArray=True) or []
         old_labels = {
-            "Open Task Browser", "Open User Tasks",
+            "Open Task Browser", "Open User Tasks", "Ftrack Input",
             "Create Publisher Node", "Publisher UI", "Publisher Test", "Publish"
         }
         for item in list(existing_items):
@@ -534,6 +549,14 @@ def install_menu() -> None:
             command=lambda *_a, **_k: launch_user_tasks(),
         )
 
+        # Item for Ftrack Input (finput-like loader).
+        cmds.menuItem(
+            "MroyaFtrackInput",
+            label="Ftrack Input",
+            parent=menu,
+            command=lambda *_a, **_k: open_ftrack_input_window_callback(),
+        )
+
         # Separator before Publisher section
         cmds.menuItem(divider=True, parent=menu)
 
@@ -550,7 +573,7 @@ def install_menu() -> None:
 
         print(
             "[mroya_maya_taskhub] Menu installed under 'Mroya' -> "
-            "'Open Task Browser', 'Open User Tasks', 'Create Publisher Node'"
+            "'Open Task Browser', 'Open User Tasks', 'Ftrack Input', 'Create Publisher Node'"
         )
     except Exception as exc:
         print("[mroya_maya_taskhub] Failed to install menu:", exc)
