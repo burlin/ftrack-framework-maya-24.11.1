@@ -50,11 +50,13 @@ def on_launch_integration(session, event):
         launch_data['integration']['env'] = {}
 
     bootstrap_path = os.path.join(connect_plugin_path, 'resource', 'bootstrap')
+    extensions_path = os.path.join(connect_plugin_path, 'extensions')
     logger.info('Adding {} to PYTHONPATH'.format(bootstrap_path))
+    logger.info('Adding {} to PYTHONPATH'.format(extensions_path))
 
     launch_data['integration']['env'][
         'PYTHONPATH.prepend'
-    ] = os.path.pathsep.join([python_dependencies, bootstrap_path])
+    ] = os.path.pathsep.join([python_dependencies, bootstrap_path, extensions_path])
     launch_data['integration']['env']['MAYA_SCRIPT_PATH'] = bootstrap_path
     launch_data['integration']['env']['FTRACK_MAYA_VERSION'] = str(
         integration_version

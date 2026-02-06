@@ -95,6 +95,14 @@ def _bootstrap_python_paths() -> Path:
             sys.path.insert(0, deps_str)
             print(f"[mroya_maya_taskhub] Added maya plugin dependencies to sys.path: {deps_str}")
 
+    # Add extensions folder for mroya.maya module
+    plugin_extensions = plugin_root / "extensions"
+    if plugin_extensions.is_dir():
+        ext_str = str(plugin_extensions)
+        if ext_str not in sys.path:
+            sys.path.insert(0, ext_str)
+            print(f"[mroya_maya_taskhub] Added extensions to sys.path: {ext_str}")
+
     return project_root
 
 
