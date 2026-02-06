@@ -13,6 +13,12 @@ import logging
 import os
 
 try:
+    from . import adding_component
+except ImportError:
+    # Fallback for testing if not in a package
+    import adding_component
+
+try:
     import maya.cmds as cmds
     import maya.OpenMayaUI as omui
     MAYA_AVAILABLE: bool = True
@@ -57,182 +63,145 @@ def _get_maya_main_window():
 
 
 class SceneResourceWindow(QtWidgets.QDialog):
-    """Scene Resource Window - temporary UI for scene resource management."""
-
     def __init__(self, parent=None):
         if not PYSIDE_AVAILABLE:
             raise RuntimeError("PySide6 or PySide2 is required")
-
         if parent is None:
             parent = _get_maya_main_window()
-
         super().__init__(parent)
 
         self.setWindowTitle("Scene Resource Window")
-        self.setMinimumSize(500, 350)
-        self.resize(550, 400)
-
+        self.setMinimumSize(600, 400)  # Made slightly wider for the new column
         self._setup_ui()
-
-        # Make window deletable on close
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
     def _setup_ui(self):
-        """Set up the UI layout."""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
-        # Top toolbar with Scan button
         toolbar_layout = QtWidgets.QHBoxLayout()
-
-        self._scan_btn = QtWidgets.QPushButton("Scan")
-        self._scan_btn.setMinimumWidth(80)
-        self._scan_btn.setToolTip("Scan scene for ftrack reference nodes")
+        self._scan_btn = QtWidgets.QPushButton("Scan Scene")
         self._scan_btn.clicked.connect(self._on_scan_clicked)
         toolbar_layout.addWidget(self._scan_btn)
-
         toolbar_layout.addStretch(1)
         layout.addLayout(toolbar_layout)
 
-        # Results table
+        # Results table - Added 3rd column
         self._results_table = QtWidgets.QTableWidget()
-        self._results_table.setColumnCount(2)
-        self._results_table.setHorizontalHeaderLabels(["Asset", "Component"])
+        self._results_table.setColumnCount(3)
+        self._results_table.setHorizontalHeaderLabels(["Asset", "Component", "Actions"])
         self._results_table.setAlternatingRowColors(True)
         self._results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._results_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._results_table.horizontalHeader().setStretchLastSection(True)
-        self._results_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        self._results_table.verticalHeader().setVisible(False)
-        layout.addWidget(self._results_table, 1)
 
-        # Status label
+        header = self._results_table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        self._results_table.setColumnWidth(2, 180)
+
+        layout.addWidget(self._results_table)
+
         self._status_label = QtWidgets.QLabel("Click 'Scan' to find ftrack reference nodes")
-        self._status_label.setStyleSheet("color: #888; font-size: 11px; padding: 5px;")
+        self._status_label.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(self._status_label)
 
-        # Bottom button row
         button_layout = QtWidgets.QHBoxLayout()
-        button_layout.setSpacing(10)
-
         button_layout.addStretch(1)
-
-        # Ok button
-        self._ok_btn = QtWidgets.QPushButton("Ok")
-        self._ok_btn.setMinimumWidth(80)
-        self._ok_btn.clicked.connect(self._on_ok_clicked)
-        button_layout.addWidget(self._ok_btn)
-
-        # Close button
         self._close_btn = QtWidgets.QPushButton("Close")
-        self._close_btn.setMinimumWidth(80)
         self._close_btn.clicked.connect(self.close)
         button_layout.addWidget(self._close_btn)
-
         layout.addLayout(button_layout)
 
     def _on_scan_clicked(self):
-        """Handle Scan button click - find ftrack reference nodes in the scene."""
         self._results_table.setRowCount(0)
+        if not MAYA_AVAILABLE: return
 
-        if not MAYA_AVAILABLE:
-            self._status_label.setText("Maya not available")
-            return
-
-        # Find all network nodes that have ftrack attributes
         ftrack_nodes = []
+        all_network_nodes = cmds.ls(type='network') or []
+        for node in all_network_nodes:
+            if cmds.attributeQuery('ftrack_asset_version_id', node=node, exists=True):
+                ftrack_nodes.append(node)
 
-        try:
-            # Get all network nodes
-            all_network_nodes = cmds.ls(type='network') or []
-
-            for node in all_network_nodes:
-                # Check if node has ftrack_asset_version_id attribute (our marker)
-                if cmds.attributeQuery('ftrack_asset_version_id', node=node, exists=True):
-                    ftrack_nodes.append(node)
-        except Exception as exc:
-            _log.error("Error scanning for ftrack nodes: %s", exc)
-            self._status_label.setText(f"Error: {exc}")
-            return
-
-        if not ftrack_nodes:
-            print("[Scene Resource Window] No ftrack reference nodes found in the scene")
-            self._status_label.setText("No ftrack reference nodes found in the scene")
-            return
-
-        # Populate the table
         self._results_table.setRowCount(len(ftrack_nodes))
 
         for row, node in enumerate(ftrack_nodes):
             asset_name, component_name = self._get_node_display_data(node)
+            path = cmds.getAttr(f"{node}.ftrack_component_path") if cmds.attributeQuery('ftrack_component_path',
+                                                                                        node=node, exists=True) else ""
 
-            # Asset column
-            asset_item = QtWidgets.QTableWidgetItem(asset_name)
-            asset_item.setData(QtCore.Qt.UserRole, node)  # Store node name
-            self._results_table.setItem(row, 0, asset_item)
+            # Asset and Component Items
+            self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(asset_name))
+            self._results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(component_name))
 
-            # Component column
-            component_item = QtWidgets.QTableWidgetItem(component_name)
-            self._results_table.setItem(row, 1, component_item)
+            # Create Action Widget (Dropdown + Button)
+            action_widget = QtWidgets.QWidget()
+            action_layout = QtWidgets.QHBoxLayout(action_widget)
+            action_layout.setContentsMargins(2, 2, 2, 2)
+            action_layout.setSpacing(4)
 
-        count = len(ftrack_nodes)
-        self._status_label.setText(f"Found {count} ftrack reference node(s)")
-        print(f"[Scene Resource Window] Found {count} ftrack reference node(s): {ftrack_nodes}")
+            combo = QtWidgets.QComboBox()
+            combo.addItems(["reference", "import"])
+
+            btn = QtWidgets.QPushButton("Add")
+            btn.setFixedWidth(50)
+            # Connect using a lambda to pass the specific row's data
+            btn.clicked.connect(lambda checked=False, p=path, c=combo: self._on_add_clicked(p, c))
+
+            action_layout.addWidget(combo)
+            action_layout.addWidget(btn)
+            self._results_table.setCellWidget(row, 2, action_widget)
+
+        self._status_label.setText(f"Found {len(ftrack_nodes)} node(s)")
+
+    def _on_add_clicked(self, component_path: str, combo_box: QtWidgets.QComboBox):
+        """Called when the 'Add' button in a row is clicked."""
+        method = combo_box.currentText()
+
+        if not component_path:
+            _log.warning("No component path found for this node.")
+            return
+
+        # Call the logic from adding_component.py
+        success = adding_component.add_component_to_scene(component_path, method)
+
+        if success:
+            self._status_label.setText(f"Successfully added via {method}")
+        else:
+            self._status_label.setText("Failed to add component.")
 
     def _get_node_display_data(self, node: str) -> tuple[str, str]:
-        """Get display data for a ftrack reference node.
-
-        Args:
-            node: The Maya node name.
-
-        Returns:
-            Tuple of (asset_name, component_name_with_extension).
-        """
+        """Get display data for a node, including file extension."""
         asset_name = ""
         component_name = ""
         component_path = ""
 
-        try:
-            if cmds.attributeQuery('ftrack_asset_name', node=node, exists=True):
-                asset_name = cmds.getAttr(f'{node}.ftrack_asset_name') or ""
-        except Exception:
-            pass
+        # Fetch attributes safely from the Maya node
+        if cmds.attributeQuery('ftrack_asset_name', node=node, exists=True):
+            asset_name = cmds.getAttr(f'{node}.ftrack_asset_name') or ""
 
-        try:
-            if cmds.attributeQuery('ftrack_component_name', node=node, exists=True):
-                component_name = cmds.getAttr(f'{node}.ftrack_component_name') or ""
-        except Exception:
-            pass
+        if cmds.attributeQuery('ftrack_component_name', node=node, exists=True):
+            component_name = cmds.getAttr(f'{node}.ftrack_component_name') or ""
 
-        try:
-            if cmds.attributeQuery('ftrack_component_path', node=node, exists=True):
-                component_path = cmds.getAttr(f'{node}.ftrack_component_path') or ""
-        except Exception:
-            pass
+        if cmds.attributeQuery('ftrack_component_path', node=node, exists=True):
+            component_path = cmds.getAttr(f'{node}.ftrack_component_path') or ""
 
-        # Extract file extension from path and append to component name
+        # Logic to append the extension (e.g., .fbx, .ma, .abc)
         if component_path:
             _, ext = os.path.splitext(component_path)
-            if ext and component_name:
-                component_name = f"{component_name}{ext}"
-            elif ext and not component_name:
-                component_name = ext
+            if ext:
+                # If we have a name like 'main' and ext '.fbx', result is 'main.fbx'
+                if component_name:
+                    component_name = f"{component_name}{ext}"
+                else:
+                    component_name = ext
 
-        # Fallbacks
-        if not asset_name:
-            asset_name = node
-        if not component_name:
-            component_name = "-"
+        # Fallbacks for empty attributes
+        asset_name = asset_name or node
+        component_name = component_name or "-"
 
         return asset_name, component_name
-
-    def _on_ok_clicked(self):
-        """Handle Ok button click."""
-        print("[Scene Resource Window] Ok button clicked!")
-        _log.info("[Scene Resource Window] Ok button clicked!")
-
 
 def open_scene_resource_window():
     """Open the Scene Resource Window.
