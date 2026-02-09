@@ -14,9 +14,11 @@ import os
 
 try:
     from . import adding_component
+    from .ftrack_session import get_versions_with_component, get_component_path_by_id
 except ImportError:
     # Fallback for testing if not in a package
     import adding_component
+    from ftrack_session import get_versions_with_component, get_component_path_by_id
 
 try:
     import maya.cmds as cmds
@@ -87,19 +89,20 @@ class SceneResourceWindow(QtWidgets.QDialog):
         toolbar_layout.addStretch(1)
         layout.addLayout(toolbar_layout)
 
-        # Results table - Added 3rd column
         self._results_table = QtWidgets.QTableWidget()
-        self._results_table.setColumnCount(3)
-        self._results_table.setHorizontalHeaderLabels(["Asset", "Component", "Actions"])
+        self._results_table.setColumnCount(4)
+        self._results_table.setHorizontalHeaderLabels(["Asset", "Version", "Component", "Actions"])
         self._results_table.setAlternatingRowColors(True)
         self._results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
 
         header = self._results_table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-        self._results_table.setColumnWidth(2, 180)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+        self._results_table.setColumnWidth(1, 80)
+        self._results_table.setColumnWidth(3, 250)
 
         layout.addWidget(self._results_table)
 
@@ -127,15 +130,44 @@ class SceneResourceWindow(QtWidgets.QDialog):
         self._results_table.setRowCount(len(ftrack_nodes))
 
         for row, node in enumerate(ftrack_nodes):
-            asset_name, component_name = self._get_node_display_data(node)
+            asset_name, component_display = self._get_node_display_data(node)
             path = cmds.getAttr(f"{node}.ftrack_component_path") if cmds.attributeQuery('ftrack_component_path',
                                                                                         node=node, exists=True) else ""
 
-            # Asset and Component Items
-            self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(asset_name))
-            self._results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(component_name))
+            # Read ftrack IDs needed for the version query
+            asset_id = ""
+            raw_component_name = ""
+            current_version_id = ""
+            if cmds.attributeQuery('ftrack_asset_id', node=node, exists=True):
+                asset_id = cmds.getAttr(f"{node}.ftrack_asset_id") or ""
+            if cmds.attributeQuery('ftrack_component_name', node=node, exists=True):
+                raw_component_name = cmds.getAttr(f"{node}.ftrack_component_name") or ""
+            if cmds.attributeQuery('ftrack_asset_version_id', node=node, exists=True):
+                current_version_id = cmds.getAttr(f"{node}.ftrack_asset_version_id") or ""
 
-            # Create Action Widget (Dropdown + Button)
+            # --- Column 0: Asset ---
+            self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(asset_name))
+
+            # --- Column 1: Version dropdown ---
+            version_combo = QtWidgets.QComboBox()
+            versions = get_versions_with_component(asset_id, raw_component_name) if asset_id and raw_component_name else []
+            current_index = 0
+            for i, v in enumerate(versions):
+                label = f"v{v['version']}"
+                version_combo.addItem(label, v)
+                if v["version_id"] == current_version_id:
+                    current_index = i
+            if not versions:
+                version_combo.addItem("—")
+                version_combo.setEnabled(False)
+            else:
+                version_combo.setCurrentIndex(current_index)
+            self._results_table.setCellWidget(row, 1, version_combo)
+
+            # --- Column 2: Component ---
+            self._results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(component_display))
+
+            # --- Column 3: Actions ---
             action_widget = QtWidgets.QWidget()
             action_layout = QtWidgets.QHBoxLayout(action_widget)
             action_layout.setContentsMargins(2, 2, 2, 2)
@@ -144,32 +176,75 @@ class SceneResourceWindow(QtWidgets.QDialog):
             combo = QtWidgets.QComboBox()
             combo.addItems(["reference", "import"])
 
+            reimport_btn = QtWidgets.QPushButton("Reimport")
+            reimport_btn.setFixedWidth(65)
+            reimport_btn.clicked.connect(lambda checked=False, vc=version_combo: self._on_reimport_clicked(vc))
+
             btn = QtWidgets.QPushButton("Add")
             btn.setFixedWidth(50)
-            # Connect using a lambda to pass the specific row's data
-            btn.clicked.connect(lambda checked=False, p=path, c=combo: self._on_add_clicked(p, c))
+            btn.clicked.connect(lambda checked=False, n=node, vc=version_combo, c=combo: self._on_add_clicked(n, vc, c))
 
             action_layout.addWidget(combo)
+            action_layout.addWidget(reimport_btn)
             action_layout.addWidget(btn)
-            self._results_table.setCellWidget(row, 2, action_widget)
+            self._results_table.setCellWidget(row, 3, action_widget)
 
         self._status_label.setText(f"Found {len(ftrack_nodes)} node(s)")
 
-    def _on_add_clicked(self, component_path: str, combo_box: QtWidgets.QComboBox):
-        """Called when the 'Add' button in a row is clicked."""
-        method = combo_box.currentText()
-
-        if not component_path:
-            _log.warning("No component path found for this node.")
+    def _on_reimport_clicked(self, version_combo: QtWidgets.QComboBox):
+        """Called when the 'Reimport' button in a row is clicked."""
+        version_data = version_combo.currentData()
+        if not version_data or not version_data.get("component_id"):
+            print("[Reimport] No component selected")
             return
 
-        # Call the logic from adding_component.py
-        success = adding_component.add_component_to_scene(component_path, method)
-
-        if success:
-            self._status_label.setText(f"Successfully added via {method}")
+        path = get_component_path_by_id(version_data["component_id"])
+        if path:
+            print(f"[Reimport] {path}")
         else:
+            print("[Reimport] Transfer component first")
+
+    def _on_add_clicked(
+        self,
+        node: str,
+        version_combo: QtWidgets.QComboBox,
+        method_combo: QtWidgets.QComboBox,
+    ):
+        """Add the component for the selected version and update the reference node."""
+        version_data = version_combo.currentData()
+        if not version_data or not version_data.get("component_id"):
+            self._status_label.setText("No version selected.")
+            return
+
+        component_id = version_data["component_id"]
+        version_id = version_data["version_id"]
+        path = get_component_path_by_id(component_id)
+
+        if not path:
+            self._status_label.setText("Transfer component first.")
+            return
+
+        method = method_combo.currentText()
+        success = adding_component.add_component_to_scene(path, method)
+
+        if not success:
             self._status_label.setText("Failed to add component.")
+            return
+
+        # Update the ftrack reference node with the new version data
+        try:
+            if cmds.attributeQuery("ftrack_component_path", node=node, exists=True):
+                cmds.setAttr(f"{node}.ftrack_component_path", path, type="string")
+            if cmds.attributeQuery("ftrack_component_id", node=node, exists=True):
+                cmds.setAttr(f"{node}.ftrack_component_id", component_id, type="string")
+            if cmds.attributeQuery("ftrack_asset_version_id", node=node, exists=True):
+                cmds.setAttr(f"{node}.ftrack_asset_version_id", version_id, type="string")
+        except Exception as exc:
+            _log.error("Failed to update reference node '%s': %s", node, exc)
+
+        self._status_label.setText(
+            f"Added v{version_data['version']} via {method}"
+        )
 
     def _get_node_display_data(self, node: str) -> tuple[str, str]:
         """Get display data for a node, including file extension."""

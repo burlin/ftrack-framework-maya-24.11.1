@@ -7,7 +7,7 @@ This module contains:
 """
 from __future__ import annotations
 
-from .ftrack_session import get_component_path_by_id
+from .ftrack_session import get_component_path_by_id, get_versions_with_component
 from .reference_nodes import (
     set_hda_params_on_selected_nodes,
     create_ftrack_reference_node,
@@ -16,6 +16,7 @@ from .scene_resource_window import open_scene_resource_window
 
 __all__ = [
     "get_component_path_by_id",
+    "get_versions_with_component",
     "set_hda_params_on_selected_nodes",
     "create_ftrack_reference_node",
     "open_scene_resource_window",
