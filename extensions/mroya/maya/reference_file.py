@@ -48,3 +48,44 @@ def reference_maya_file(file_path: str) -> bool:
     except Exception as exc:
         _log.error("Maya reference command failed: %s", exc)
         return False
+
+
+def replace_reference(current_path: str, new_path: str) -> bool:
+    """Replace an existing reference with a new file path.
+
+    Finds the reference node that currently points to *current_path* and
+    swaps it to *new_path* using ``cmds.file(loadReference=...)``.
+
+    Args:
+        current_path: The file path the reference currently uses.
+        new_path: The new file path to swap in.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    if not os.path.exists(new_path):
+        _log.error("Replace reference failed: new file does not exist -> %s", new_path)
+        return False
+
+    try:
+        # Find the reference node that owns current_path
+        ref_node = cmds.file(current_path, query=True, referenceNode=True)
+    except Exception:
+        ref_node = None
+
+    if not ref_node:
+        _log.error(
+            "Replace reference failed: no reference node found for -> %s", current_path
+        )
+        return False
+
+    try:
+        _log.info(
+            "Replacing reference %s: %s -> %s", ref_node, current_path, new_path
+        )
+        cmds.file(new_path, loadReference=ref_node)
+        print(f"[Reference File] Replaced reference: {ref_node} -> {new_path}")
+        return True
+    except Exception as exc:
+        _log.error("Failed to replace reference %s: %s", ref_node, exc)
+        return False

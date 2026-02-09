@@ -15,10 +15,12 @@ import os
 try:
     from . import adding_component
     from .ftrack_session import get_versions_with_component, get_component_path_by_id
+    from .reference_file import replace_reference
 except ImportError:
     # Fallback for testing if not in a package
     import adding_component
     from ftrack_session import get_versions_with_component, get_component_path_by_id
+    from reference_file import replace_reference
 
 try:
     import maya.cmds as cmds
@@ -178,7 +180,7 @@ class SceneResourceWindow(QtWidgets.QDialog):
 
             reimport_btn = QtWidgets.QPushButton("Reimport")
             reimport_btn.setFixedWidth(65)
-            reimport_btn.clicked.connect(lambda checked=False, vc=version_combo: self._on_reimport_clicked(vc))
+            reimport_btn.clicked.connect(lambda checked=False, n=node, vc=version_combo: self._on_reimport_clicked(n, vc))
 
             btn = QtWidgets.QPushButton("Add")
             btn.setFixedWidth(50)
@@ -191,18 +193,47 @@ class SceneResourceWindow(QtWidgets.QDialog):
 
         self._status_label.setText(f"Found {len(ftrack_nodes)} node(s)")
 
-    def _on_reimport_clicked(self, version_combo: QtWidgets.QComboBox):
-        """Called when the 'Reimport' button in a row is clicked."""
+    def _on_reimport_clicked(self, node: str, version_combo: QtWidgets.QComboBox):
+        """Replace the existing reference with the version selected in the dropdown."""
         version_data = version_combo.currentData()
         if not version_data or not version_data.get("component_id"):
-            print("[Reimport] No component selected")
+            self._status_label.setText("No version selected.")
             return
 
-        path = get_component_path_by_id(version_data["component_id"])
-        if path:
-            print(f"[Reimport] {path}")
-        else:
+        component_id = version_data["component_id"]
+        version_id = version_data["version_id"]
+
+        new_path = get_component_path_by_id(component_id)
+        if not new_path:
+            self._status_label.setText("Transfer component first.")
             print("[Reimport] Transfer component first")
+            return
+
+        # Read the current path from the reference node
+        current_path = ""
+        if cmds.attributeQuery("ftrack_component_path", node=node, exists=True):
+            current_path = cmds.getAttr(f"{node}.ftrack_component_path") or ""
+
+        if not current_path:
+            self._status_label.setText("No current path on reference node.")
+            return
+
+        success = replace_reference(current_path, new_path)
+        if not success:
+            self._status_label.setText("Failed to replace reference.")
+            return
+
+        # Update the ftrack reference node attributes
+        try:
+            cmds.setAttr(f"{node}.ftrack_component_path", new_path, type="string")
+            if cmds.attributeQuery("ftrack_component_id", node=node, exists=True):
+                cmds.setAttr(f"{node}.ftrack_component_id", component_id, type="string")
+            if cmds.attributeQuery("ftrack_asset_version_id", node=node, exists=True):
+                cmds.setAttr(f"{node}.ftrack_asset_version_id", version_id, type="string")
+        except Exception as exc:
+            _log.error("Failed to update reference node '%s': %s", node, exc)
+
+        self._status_label.setText(f"Reimported v{version_data['version']}")
 
     def _on_add_clicked(
         self,
