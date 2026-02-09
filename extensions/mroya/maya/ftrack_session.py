@@ -61,27 +61,39 @@ def get_component_path_by_id(component_id: str) -> str | None:
     if not session:
         return None
 
+    _SKIP_LOCATIONS = {"ftrack.server", "ftrack.unmanaged", "s3.studio.storage"}
+
     try:
-        # Get the component entity
         component = session.get("Component", component_id)
         if not component:
             _log.warning("Component not found: %s", component_id)
             return None
 
-        # Get a location to resolve the path
-        location = session.pick_location()
-        if not location:
-            _log.warning("No location available to resolve path")
-            return None
+        for comp_location in component["component_locations"]:
+            location = comp_location["location"]
 
-        # Get the filesystem path
-        path = location.get_filesystem_path(component)
-        if path:
-            _log.debug("Resolved path for component %s: %s", component_id, path)
-            return str(path)
-        else:
-            _log.warning("Could not resolve path for component %s", component_id)
-            return None
+            if location["name"] in _SKIP_LOCATIONS:
+                continue
+
+            availability = location.get_component_availability(component)
+            if availability != 100:
+                continue
+
+            try:
+                path = location.get_filesystem_path(component)
+                if path:
+                    _log.debug(
+                        "Resolved path for component %s via location '%s': %s",
+                        component_id,
+                        location["name"],
+                        path,
+                    )
+                    return str(path)
+            except Exception:
+                continue
+
+        _log.warning("Could not resolve path for component %s in any location", component_id)
+        return None
 
     except Exception as exc:
         _log.error("Error fetching component path for %s: %s", component_id, exc)
