@@ -28,5 +28,8 @@ def create_publish_node() -> str:
     cmds.addAttr(node, longName="task_id", dataType="string")
     cmds.setAttr(f"{node}.task_id", task_id, type="string")
 
+    cmds.addAttr(node, longName="asset_name", dataType="string")
+    cmds.setAttr(f"{node}.asset_name", "Unnamed", type="string")
+
     _log.info("Created publish node '%s' with task_id='%s'", node, task_id)
     return node

@@ -9,6 +9,11 @@ from __future__ import annotations
 import logging
 
 try:
+    from .ftrack_session import get_task_path
+except ImportError:
+    from ftrack_session import get_task_path
+
+try:
     import maya.cmds as cmds
     import maya.OpenMayaUI as omui
     MAYA_AVAILABLE: bool = True
@@ -60,7 +65,7 @@ class ScenePublishWindow(QtWidgets.QDialog):
         super().__init__(parent)
 
         self.setWindowTitle("Scene Publish Inspector")
-        self.setMinimumSize(500, 350)
+        self.setMinimumSize(650, 350)
         self._setup_ui()
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
@@ -77,15 +82,18 @@ class ScenePublishWindow(QtWidgets.QDialog):
         layout.addLayout(toolbar_layout)
 
         self._results_table = QtWidgets.QTableWidget()
-        self._results_table.setColumnCount(2)
-        self._results_table.setHorizontalHeaderLabels(["Node", "Task ID"])
+        self._results_table.setColumnCount(4)
+        self._results_table.setHorizontalHeaderLabels(["Task", "Asset", "Components", ""])
         self._results_table.setAlternatingRowColors(True)
         self._results_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._results_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
 
         header = self._results_table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+        self._results_table.setColumnWidth(3, 120)
 
         layout.addWidget(self._results_table)
 
@@ -115,11 +123,88 @@ class ScenePublishWindow(QtWidgets.QDialog):
 
         for row, node in enumerate(publish_nodes):
             task_id = cmds.getAttr(f"{node}.task_id") or ""
+            asset_name = ""
+            if cmds.attributeQuery("asset_name", node=node, exists=True):
+                asset_name = cmds.getAttr(f"{node}.asset_name") or ""
+            asset_name = asset_name or "Unnamed"
 
-            self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(node))
-            self._results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(task_id))
+            task_display = get_task_path(task_id) if task_id else ""
+
+            self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(task_display))
+            self._results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(asset_name))
+            self._results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(""))
+
+            setup_btn = QtWidgets.QPushButton("Setup Publisher")
+            setup_btn.clicked.connect(
+                lambda checked=False, n=node: self._on_setup_publisher(n)
+            )
+            self._results_table.setCellWidget(row, 3, setup_btn)
 
         self._status_label.setText(f"Found {len(publish_nodes)} publish node(s)")
+
+    def _on_setup_publisher(self, node: str):
+        """Open the Publisher Setup window for a given node."""
+        window = PublisherSetupWindow(node, parent=self)
+        window.show()
+        window.raise_()
+
+
+class PublisherSetupWindow(QtWidgets.QDialog):
+    """Placeholder UI for setting up a publish node's asset name and components."""
+
+    def __init__(self, node: str, parent=None):
+        super().__init__(parent)
+        self._node = node
+
+        asset_name = ""
+        if MAYA_AVAILABLE and cmds.attributeQuery("asset_name", node=node, exists=True):
+            asset_name = cmds.getAttr(f"{node}.asset_name") or ""
+
+        self.setWindowTitle(f"Publisher Setup - {node}")
+        self.setMinimumSize(400, 250)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        # Asset name row
+        name_layout = QtWidgets.QHBoxLayout()
+        name_layout.addWidget(QtWidgets.QLabel("Asset Name:"))
+        self._name_edit = QtWidgets.QLineEdit(asset_name)
+        name_layout.addWidget(self._name_edit)
+        self._set_name_btn = QtWidgets.QPushButton("Set Asset Name")
+        self._set_name_btn.clicked.connect(self._on_set_asset_name)
+        name_layout.addWidget(self._set_name_btn)
+        layout.addLayout(name_layout)
+
+        # Components placeholder
+        layout.addWidget(QtWidgets.QLabel("Components:"))
+        self._components_list = QtWidgets.QListWidget()
+        layout.addWidget(self._components_list)
+
+        self._add_component_btn = QtWidgets.QPushButton("Add Component")
+        self._add_component_btn.clicked.connect(self._on_add_component)
+        layout.addWidget(self._add_component_btn)
+
+        # Close
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addStretch(1)
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+    def _on_set_asset_name(self):
+        name = self._name_edit.text().strip()
+        if not name:
+            return
+        if MAYA_AVAILABLE and cmds.attributeQuery("asset_name", node=self._node, exists=True):
+            cmds.setAttr(f"{self._node}.asset_name", name, type="string")
+            print(f"[Publisher Setup] Set asset_name to '{name}' on {self._node}")
+
+    def _on_add_component(self):
+        print(f"[Publisher Setup] Add Component clicked for {self._node}")
 
 
 def open_scene_publish_window():

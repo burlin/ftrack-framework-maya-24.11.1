@@ -100,6 +100,42 @@ def get_component_path_by_id(component_id: str) -> str | None:
         return None
 
 
+def get_task_path(task_id: str) -> str:
+    """Return a human-readable path for a task, e.g. ``shot0010/Animation``.
+
+    Walks up the parent hierarchy (excluding the Project) and joins
+    the names with ``/``.
+
+    Returns an empty string on any error or if task_id is empty.
+    """
+    if not task_id:
+        return ""
+
+    session = _get_ftrack_session()
+    if not session:
+        return ""
+
+    try:
+        task = session.get("Context", task_id)
+        if not task:
+            return task_id
+
+        names: list[str] = []
+        current = task
+        while current is not None:
+            # Stop before the Project level
+            if current.entity_type == "Project":
+                break
+            names.append(current["name"])
+            current = current.get("parent")
+
+        names.reverse()
+        return "/".join(names) if names else task_id
+    except Exception as exc:
+        _log.error("Error resolving task path for %s: %s", task_id, exc)
+        return task_id
+
+
 def get_versions_with_component(
     asset_id: str, component_name: str
 ) -> list[dict[str, Any]]:
