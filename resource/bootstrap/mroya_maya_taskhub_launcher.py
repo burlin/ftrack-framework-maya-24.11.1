@@ -254,7 +254,34 @@ def launch_user_tasks(*_args, **_kwargs) -> None:
     window.show()
 
 
-def create_publisher_node(*_args, **_kwargs) -> None:
+def open_scene_publish_inspector(*_args, **_kwargs) -> None:
+    """Open the Scene Publish Inspector window."""
+    _bootstrap_python_paths()
+
+    try:
+        from mroya.maya.scene_publish_window import open_scene_publish_window
+        open_scene_publish_window()
+    except Exception as exc:
+        import traceback
+        print(f"[mroya_maya_taskhub] Failed to open Scene Publish Inspector: {exc}")
+        print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
+
+
+def create_publisher_node_new(*_args, **_kwargs) -> None:
+    """Create publisher node using the new create_publisher_node module."""
+    _bootstrap_python_paths()
+
+    try:
+        from mroya.maya.publish_node import create_publish_node
+        node = create_publish_node()
+        print(f"[mroya_maya_taskhub] Created publish node: {node}")
+    except Exception as exc:
+        import traceback
+        print(f"[mroya_maya_taskhub] Failed to create publisher node (new): {exc}")
+        print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
+
+
+def create_publisher_node_old(*_args, **_kwargs) -> None:
     """Create publisher node in Maya scene and open Publisher UI."""
     _bootstrap_python_paths()
     
@@ -262,8 +289,8 @@ def create_publisher_node(*_args, **_kwargs) -> None:
         from ftrack_inout.publisher.dcc.maya import create_publisher_node as _create_node
         node_name = _create_node()
         cmds.select(node_name)
-        print(f"[mroya_maya_taskhub] ✅ Created publisher node: {node_name}")
-        
+        print(f"[mroya_maya_taskhub] Created publisher node (OLD): {node_name}")
+
         # Open Publisher window
         _open_publisher_window(node_name)
     except Exception as exc:
@@ -534,7 +561,9 @@ def install_menu() -> None:
         existing_items = cmds.menu(menu, q=True, itemArray=True) or []
         old_labels = {
             "Open Task Browser", "Open User Tasks", "Ftrack Input",
-            "Create Publisher Node", "Publisher UI", "Publisher Test", "Publish"
+            "Create Publisher Node", "Create Publisher Node _OLD",
+            "Scene Publish Inspector",
+            "Publisher UI", "Publisher Test", "Publish",
         }
         for item in list(existing_items):
             label = cmds.menuItem(item, q=True, label=True)
@@ -568,12 +597,28 @@ def install_menu() -> None:
         # Separator before Publisher section
         cmds.menuItem(divider=True, parent=menu)
 
-        # Create Publisher Node only - buttons are on the node via AETemplate
+        # New publisher node creation
         cmds.menuItem(
             "MroyaPublisherCreate",
             label="Create Publisher Node",
             parent=menu,
-            command=lambda *_a, **_k: create_publisher_node(),
+            command=lambda *_a, **_k: create_publisher_node_new(),
+        )
+
+        # Scene Publish Inspector
+        cmds.menuItem(
+            "MroyaScenePublishInspector",
+            label="Scene Publish Inspector",
+            parent=menu,
+            command=lambda *_a, **_k: open_scene_publish_inspector(),
+        )
+
+        # Old publisher node creation (to be removed later)
+        cmds.menuItem(
+            "MroyaPublisherCreateOld",
+            label="Create Publisher Node _OLD",
+            parent=menu,
+            command=lambda *_a, **_k: create_publisher_node_old(),
         )
 
         # Install selection callback for publisher panel

@@ -1,0 +1,32 @@
+"""Ftrack publish node creation for Maya."""
+from __future__ import annotations
+
+import os
+import logging
+
+import maya.cmds as cmds
+
+_log = logging.getLogger(__name__)
+
+NODE_NAME = "ftrack_publish_unnamed"
+
+
+def create_publish_node() -> str:
+    """Create an empty Maya network node for ftrack publishing.
+
+    The node is named ``ftrack_publish_unnamed`` and carries a single
+    ``task_id`` attribute whose value is read from the ``FTRACK_CONTEXTID``
+    environment variable (set by ftrack Connect when the scene is opened).
+
+    Returns:
+        The name of the created node.
+    """
+    task_id = os.environ.get("FTRACK_CONTEXTID", "")
+
+    node = cmds.createNode("network", name=NODE_NAME)
+
+    cmds.addAttr(node, longName="task_id", dataType="string")
+    cmds.setAttr(f"{node}.task_id", task_id, type="string")
+
+    _log.info("Created publish node '%s' with task_id='%s'", node, task_id)
+    return node
