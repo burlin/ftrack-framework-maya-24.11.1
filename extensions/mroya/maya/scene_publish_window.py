@@ -6,7 +6,9 @@ Usage from Maya:
 """
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 try:
     from .ftrack_session import get_task_path, _get_ftrack_session
@@ -137,9 +139,27 @@ class ScenePublishWindow(QtWidgets.QDialog):
 
             task_display = get_task_path(task_id) if task_id else ""
 
+            components_str = ""
+            if cmds.attributeQuery("components", node=node, exists=True):
+                components_str = cmds.getAttr(f"{node}.components") or ""
+
             self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(task_display))
             self._results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(asset_name))
-            self._results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(""))
+
+            # Build a widget with a checkbox per component
+            comp_widget = QtWidgets.QWidget()
+            comp_layout = QtWidgets.QVBoxLayout(comp_widget)
+            comp_layout.setContentsMargins(4, 2, 4, 2)
+            comp_layout.setSpacing(2)
+            if components_str:
+                for comp_name in components_str.split(", "):
+                    cb = QtWidgets.QCheckBox(comp_name.strip())
+                    comp_layout.addWidget(cb)
+            self._results_table.setCellWidget(row, 2, comp_widget)
+
+            # Adjust row height to fit checkboxes
+            row_height = max(30, 24 * max(1, len(components_str.split(", "))) + 8) if components_str else 30
+            self._results_table.setRowHeight(row, row_height)
 
             setup_btn = QtWidgets.QPushButton("Setup Publisher")
             setup_btn.clicked.connect(
@@ -156,13 +176,27 @@ class ScenePublishWindow(QtWidgets.QDialog):
         window.raise_()
 
 
+def _load_asset_definitions() -> list[dict]:
+    """Load predefined asset definitions from asset_definitions.json."""
+    json_path = Path(__file__).resolve().parents[3] / "resource" / "asset_definitions.json"
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        return data.get("assets", [])
+    except Exception as exc:
+        _log.error("Failed to load asset_definitions.json (%s): %s", json_path, exc)
+        return []
+
+
 class PublisherSetupWindow(QtWidgets.QDialog):
-    """UI for setting up a publish node — pick an existing asset or set a new name."""
+    """UI for setting up a publish node — pick a predefined asset or use an existing one."""
 
     def __init__(self, node: str, parent=None):
         super().__init__(parent)
         self._node = node
-        self._assets_ids: list[str] = []
+        self._existing_names: set[str] = set()
+        self._existing_ids: dict[str, str] = {}
+        self._asset_defs = _load_asset_definitions()
 
         # Read task_id from the node
         self._task_id = ""
@@ -174,41 +208,59 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             asset_name = cmds.getAttr(f"{node}.asset_name") or ""
 
         self.setWindowTitle(f"Publisher Setup - {node}")
-        self.setMinimumSize(450, 200)
+        self.setMinimumSize(500, 220)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
-        # --- Get Existing assets row ---
-        get_ex_layout = QtWidgets.QHBoxLayout()
-        get_ex_layout.addWidget(QtWidgets.QLabel("Existing Assets:"))
-        self._assets_combo = QtWidgets.QComboBox()
-        self._assets_combo.setSizePolicy(
+        # --- Current asset label ---
+        cur_layout = QtWidgets.QHBoxLayout()
+        cur_layout.addWidget(QtWidgets.QLabel("Current Asset:"))
+        self._current_label = QtWidgets.QLabel(asset_name or "Unnamed")
+        self._current_label.setStyleSheet("font-weight: bold;")
+        cur_layout.addWidget(self._current_label)
+        cur_layout.addStretch(1)
+        layout.addLayout(cur_layout)
+
+        # --- New Asset (predefined) row ---
+        new_layout = QtWidgets.QHBoxLayout()
+        new_layout.addWidget(QtWidgets.QLabel("New Asset:"))
+        self._new_asset_combo = QtWidgets.QComboBox()
+        self._new_asset_combo.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
-        get_ex_layout.addWidget(self._assets_combo)
+        for adef in self._asset_defs:
+            comps = ", ".join(adef.get("components", []))
+            self._new_asset_combo.addItem(
+                f"{adef['name']}  (type: {adef.get('type', '')}, components: {comps})"
+            )
+        new_layout.addWidget(self._new_asset_combo)
+
+        self._apply_new_btn = QtWidgets.QPushButton("Create")
+        self._apply_new_btn.clicked.connect(self._on_apply_new)
+        new_layout.addWidget(self._apply_new_btn)
+        layout.addLayout(new_layout)
+
+        # --- Existing Assets row ---
+        ex_layout = QtWidgets.QHBoxLayout()
+        ex_layout.addWidget(QtWidgets.QLabel("Existing Assets:"))
+        self._existing_combo = QtWidgets.QComboBox()
+        self._existing_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        ex_layout.addWidget(self._existing_combo)
 
         self._get_ex_btn = QtWidgets.QPushButton("Get Existing")
         self._get_ex_btn.clicked.connect(self._on_get_ex_clicked)
-        get_ex_layout.addWidget(self._get_ex_btn)
+        ex_layout.addWidget(self._get_ex_btn)
 
-        self._use_btn = QtWidgets.QPushButton("Use Selected")
-        self._use_btn.clicked.connect(self._on_use_selected)
-        self._use_btn.setEnabled(False)
-        get_ex_layout.addWidget(self._use_btn)
-        layout.addLayout(get_ex_layout)
-
-        # --- Asset name row ---
-        name_layout = QtWidgets.QHBoxLayout()
-        name_layout.addWidget(QtWidgets.QLabel("Asset Name:"))
-        self._name_edit = QtWidgets.QLineEdit(asset_name)
-        name_layout.addWidget(self._name_edit)
-        self._set_name_btn = QtWidgets.QPushButton("Set Asset Name")
-        self._set_name_btn.clicked.connect(self._on_set_asset_name)
-        name_layout.addWidget(self._set_name_btn)
-        layout.addLayout(name_layout)
+        self._use_ex_btn = QtWidgets.QPushButton("Use Selected")
+        self._use_ex_btn.clicked.connect(self._on_use_selected)
+        self._use_ex_btn.setEnabled(False)
+        ex_layout.addWidget(self._use_ex_btn)
+        layout.addLayout(ex_layout)
 
         # --- Close ---
         btn_layout = QtWidgets.QHBoxLayout()
@@ -234,7 +286,6 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             if SELECTOR_AVAILABLE:
                 unique_version, unique_types = get_assets_list(session, self._task_id)
             else:
-                # Inline fallback (same query as core.selector)
                 task = session.get("Task", self._task_id)
                 parent_id = task["parent_id"]
                 assets = session.query(
@@ -253,14 +304,18 @@ class PublisherSetupWindow(QtWidgets.QDialog):
                     except Exception:
                         continue
 
-            self._assets_combo.clear()
-            self._assets_ids.clear()
-            for name, asset_id in unique_version.items():
-                label = f"{name}    type: {unique_types.get(name, '')}"
-                self._assets_combo.addItem(label)
-                self._assets_ids.append(asset_id)
+            self._existing_combo.clear()
+            self._existing_names.clear()
+            self._existing_ids.clear()
 
-            self._use_btn.setEnabled(self._assets_combo.count() > 0)
+            for name, asset_id in unique_version.items():
+                asset_type = unique_types.get(name, "")
+                label = f"{name}    type: {asset_type}"
+                self._existing_combo.addItem(label)
+                self._existing_names.add(name)
+                self._existing_ids[name] = asset_id
+
+            self._use_ex_btn.setEnabled(self._existing_combo.count() > 0)
             _log.info("Loaded %d existing assets for task %s", len(unique_version), self._task_id)
 
         except Exception as exc:
@@ -268,35 +323,86 @@ class PublisherSetupWindow(QtWidgets.QDialog):
 
     # ------------------------------------------------------------------
     def _on_use_selected(self):
-        """Write the selected asset's name and id to the node."""
-        idx = self._assets_combo.currentIndex()
-        if idx < 0 or idx >= len(self._assets_ids):
+        """Write the selected existing asset to the node."""
+        idx = self._existing_combo.currentIndex()
+        if idx < 0:
             return
 
-        # Extract the raw asset name (strip "    type: ..." suffix)
-        raw_label = self._assets_combo.currentText()
+        raw_label = self._existing_combo.currentText()
         asset_name = raw_label.split("    type:")[0].strip()
-        asset_id = self._assets_ids[idx]
+        asset_id = self._existing_ids.get(asset_name, "")
 
-        if MAYA_AVAILABLE:
-            if cmds.attributeQuery("asset_name", node=self._node, exists=True):
-                cmds.setAttr(f"{self._node}.asset_name", asset_name, type="string")
-            # Store asset_id if attribute exists (or create it)
-            if not cmds.attributeQuery("asset_id", node=self._node, exists=True):
-                cmds.addAttr(self._node, longName="asset_id", dataType="string")
-            cmds.setAttr(f"{self._node}.asset_id", asset_id, type="string")
-
-        self._name_edit.setText(asset_name)
-        print(f"[Publisher Setup] Selected asset '{asset_name}' (id: {asset_id}) on {self._node}")
+        self._write_asset_to_node(asset_name, asset_id)
+        print(f"[Publisher Setup] Using existing asset '{asset_name}' (id: {asset_id})")
 
     # ------------------------------------------------------------------
-    def _on_set_asset_name(self):
-        name = self._name_edit.text().strip()
-        if not name:
+    def _on_apply_new(self):
+        """Apply the selected predefined asset, checking against existing assets."""
+        idx = self._new_asset_combo.currentIndex()
+        if idx < 0 or idx >= len(self._asset_defs):
             return
-        if MAYA_AVAILABLE and cmds.attributeQuery("asset_name", node=self._node, exists=True):
-            cmds.setAttr(f"{self._node}.asset_name", name, type="string")
-            print(f"[Publisher Setup] Set asset_name to '{name}' on {self._node}")
+
+        # Fetch existing assets first if not already fetched
+        if not self._existing_names:
+            self._on_get_ex_clicked()
+
+        adef = self._asset_defs[idx]
+        asset_name = adef["name"]
+
+        # Case-insensitive check against existing assets
+        existing_lower = {n.lower() for n in self._existing_names}
+        if asset_name.lower() in existing_lower:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Asset Exists",
+                f"Asset '{asset_name}' already exists in ftrack.\n\n"
+                f"Use 'Get Existing' → 'Use Selected' to pick it instead.",
+            )
+            return
+
+        comps = adef.get("components", [])
+        self._write_asset_to_node(asset_name, "", components=comps)
+
+        # Store asset_type on the node
+        if MAYA_AVAILABLE:
+            if not cmds.attributeQuery("asset_type", node=self._node, exists=True):
+                cmds.addAttr(self._node, longName="asset_type", dataType="string")
+            cmds.setAttr(
+                f"{self._node}.asset_type", adef.get("type", ""), type="string"
+            )
+
+        print(
+            f"[Publisher Setup] Applied new asset '{asset_name}' "
+            f"(type: {adef.get('type', '')}, components: {comps})"
+        )
+
+    # ------------------------------------------------------------------
+    def _write_asset_to_node(
+        self, asset_name: str, asset_id: str, components: list[str] | None = None
+    ):
+        """Write asset_name, asset_id, components to the Maya node and rename it."""
+        if not MAYA_AVAILABLE:
+            return
+        if cmds.attributeQuery("asset_name", node=self._node, exists=True):
+            cmds.setAttr(f"{self._node}.asset_name", asset_name, type="string")
+        if not cmds.attributeQuery("asset_id", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="asset_id", dataType="string")
+        cmds.setAttr(f"{self._node}.asset_id", asset_id, type="string")
+
+        # Write components attribute
+        if components is not None:
+            comp_str = ", ".join(components)
+            if not cmds.attributeQuery("components", node=self._node, exists=True):
+                cmds.addAttr(self._node, longName="components", dataType="string")
+            cmds.setAttr(f"{self._node}.components", comp_str, type="string")
+
+        # Rename node to ftrack_publish_{AssetName}
+        new_name = f"ftrack_publish_{asset_name}"
+        renamed = cmds.rename(self._node, new_name)
+        self._node = renamed
+        self.setWindowTitle(f"Publisher Setup - {renamed}")
+
+        self._current_label.setText(asset_name)
 
 
 def open_scene_publish_window():

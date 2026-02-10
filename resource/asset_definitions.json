@@ -1,0 +1,14 @@
+{
+  "assets": [
+    {
+      "name": "Camera",
+      "type": "cam",
+      "components": ["camera.fbx", "camera.usd"]
+    },
+    {
+      "name": "Animation",
+      "type": "anim",
+      "components": ["animation.fbx"]
+    }
+  ]
+}
