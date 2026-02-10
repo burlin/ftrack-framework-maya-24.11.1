@@ -9,9 +9,16 @@ from __future__ import annotations
 import logging
 
 try:
-    from .ftrack_session import get_task_path
+    from .ftrack_session import get_task_path, _get_ftrack_session
 except ImportError:
-    from ftrack_session import get_task_path
+    from ftrack_session import get_task_path, _get_ftrack_session
+
+try:
+    from ftrack_inout.publisher.core.selector import get_assets_list
+    SELECTOR_AVAILABLE = True
+except ImportError:
+    get_assets_list = None  # type: ignore
+    SELECTOR_AVAILABLE = False
 
 try:
     import maya.cmds as cmds
@@ -150,25 +157,50 @@ class ScenePublishWindow(QtWidgets.QDialog):
 
 
 class PublisherSetupWindow(QtWidgets.QDialog):
-    """Placeholder UI for setting up a publish node's asset name and components."""
+    """UI for setting up a publish node — pick an existing asset or set a new name."""
 
     def __init__(self, node: str, parent=None):
         super().__init__(parent)
         self._node = node
+        self._assets_ids: list[str] = []
+
+        # Read task_id from the node
+        self._task_id = ""
+        if MAYA_AVAILABLE and cmds.attributeQuery("task_id", node=node, exists=True):
+            self._task_id = cmds.getAttr(f"{node}.task_id") or ""
 
         asset_name = ""
         if MAYA_AVAILABLE and cmds.attributeQuery("asset_name", node=node, exists=True):
             asset_name = cmds.getAttr(f"{node}.asset_name") or ""
 
         self.setWindowTitle(f"Publisher Setup - {node}")
-        self.setMinimumSize(400, 250)
+        self.setMinimumSize(450, 200)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
-        # Asset name row
+        # --- Get Existing assets row ---
+        get_ex_layout = QtWidgets.QHBoxLayout()
+        get_ex_layout.addWidget(QtWidgets.QLabel("Existing Assets:"))
+        self._assets_combo = QtWidgets.QComboBox()
+        self._assets_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        get_ex_layout.addWidget(self._assets_combo)
+
+        self._get_ex_btn = QtWidgets.QPushButton("Get Existing")
+        self._get_ex_btn.clicked.connect(self._on_get_ex_clicked)
+        get_ex_layout.addWidget(self._get_ex_btn)
+
+        self._use_btn = QtWidgets.QPushButton("Use Selected")
+        self._use_btn.clicked.connect(self._on_use_selected)
+        self._use_btn.setEnabled(False)
+        get_ex_layout.addWidget(self._use_btn)
+        layout.addLayout(get_ex_layout)
+
+        # --- Asset name row ---
         name_layout = QtWidgets.QHBoxLayout()
         name_layout.addWidget(QtWidgets.QLabel("Asset Name:"))
         self._name_edit = QtWidgets.QLineEdit(asset_name)
@@ -178,16 +210,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         name_layout.addWidget(self._set_name_btn)
         layout.addLayout(name_layout)
 
-        # Components placeholder
-        layout.addWidget(QtWidgets.QLabel("Components:"))
-        self._components_list = QtWidgets.QListWidget()
-        layout.addWidget(self._components_list)
-
-        self._add_component_btn = QtWidgets.QPushButton("Add Component")
-        self._add_component_btn.clicked.connect(self._on_add_component)
-        layout.addWidget(self._add_component_btn)
-
-        # Close
+        # --- Close ---
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch(1)
         close_btn = QtWidgets.QPushButton("Close")
@@ -195,6 +218,78 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 
+    # ------------------------------------------------------------------
+    def _on_get_ex_clicked(self):
+        """Fetch existing assets for the task (same logic as get_ex)."""
+        session = _get_ftrack_session()
+        if not session:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Ftrack session is not available.")
+            return
+
+        if not self._task_id:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Task ID is empty on this node.")
+            return
+
+        try:
+            if SELECTOR_AVAILABLE:
+                unique_version, unique_types = get_assets_list(session, self._task_id)
+            else:
+                # Inline fallback (same query as core.selector)
+                task = session.get("Task", self._task_id)
+                parent_id = task["parent_id"]
+                assets = session.query(
+                    f'Asset where parent.id is "{parent_id}"'
+                ).all()
+                unique_version = {}
+                unique_types = {}
+                seen: set[str] = set()
+                for asset in sorted(assets, key=lambda a: a["name"].lower()):
+                    try:
+                        name = asset["name"]
+                        if name not in seen:
+                            unique_version[name] = asset["id"]
+                            unique_types[name] = asset["type"]["name"]
+                            seen.add(name)
+                    except Exception:
+                        continue
+
+            self._assets_combo.clear()
+            self._assets_ids.clear()
+            for name, asset_id in unique_version.items():
+                label = f"{name}    type: {unique_types.get(name, '')}"
+                self._assets_combo.addItem(label)
+                self._assets_ids.append(asset_id)
+
+            self._use_btn.setEnabled(self._assets_combo.count() > 0)
+            _log.info("Loaded %d existing assets for task %s", len(unique_version), self._task_id)
+
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to load assets:\n{exc}")
+
+    # ------------------------------------------------------------------
+    def _on_use_selected(self):
+        """Write the selected asset's name and id to the node."""
+        idx = self._assets_combo.currentIndex()
+        if idx < 0 or idx >= len(self._assets_ids):
+            return
+
+        # Extract the raw asset name (strip "    type: ..." suffix)
+        raw_label = self._assets_combo.currentText()
+        asset_name = raw_label.split("    type:")[0].strip()
+        asset_id = self._assets_ids[idx]
+
+        if MAYA_AVAILABLE:
+            if cmds.attributeQuery("asset_name", node=self._node, exists=True):
+                cmds.setAttr(f"{self._node}.asset_name", asset_name, type="string")
+            # Store asset_id if attribute exists (or create it)
+            if not cmds.attributeQuery("asset_id", node=self._node, exists=True):
+                cmds.addAttr(self._node, longName="asset_id", dataType="string")
+            cmds.setAttr(f"{self._node}.asset_id", asset_id, type="string")
+
+        self._name_edit.setText(asset_name)
+        print(f"[Publisher Setup] Selected asset '{asset_name}' (id: {asset_id}) on {self._node}")
+
+    # ------------------------------------------------------------------
     def _on_set_asset_name(self):
         name = self._name_edit.text().strip()
         if not name:
@@ -202,9 +297,6 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         if MAYA_AVAILABLE and cmds.attributeQuery("asset_name", node=self._node, exists=True):
             cmds.setAttr(f"{self._node}.asset_name", name, type="string")
             print(f"[Publisher Setup] Set asset_name to '{name}' on {self._node}")
-
-    def _on_add_component(self):
-        print(f"[Publisher Setup] Add Component clicked for {self._node}")
 
 
 def open_scene_publish_window():
