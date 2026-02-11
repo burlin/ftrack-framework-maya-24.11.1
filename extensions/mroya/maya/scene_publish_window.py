@@ -196,6 +196,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         self._node = node
         self._existing_names: set[str] = set()
         self._existing_ids: dict[str, str] = {}
+        self._existing_types: dict[str, str] = {}
         self._asset_defs = _load_asset_definitions()
 
         # Read task_id from the node
@@ -307,6 +308,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             self._existing_combo.clear()
             self._existing_names.clear()
             self._existing_ids.clear()
+            self._existing_types.clear()
 
             for name, asset_id in unique_version.items():
                 asset_type = unique_types.get(name, "")
@@ -314,6 +316,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
                 self._existing_combo.addItem(label)
                 self._existing_names.add(name)
                 self._existing_ids[name] = asset_id
+                self._existing_types[name] = asset_type
 
             self._use_ex_btn.setEnabled(self._existing_combo.count() > 0)
             _log.info("Loaded %d existing assets for task %s", len(unique_version), self._task_id)
@@ -331,9 +334,20 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         raw_label = self._existing_combo.currentText()
         asset_name = raw_label.split("    type:")[0].strip()
         asset_id = self._existing_ids.get(asset_name, "")
+        asset_type = self._existing_types.get(asset_name, "")
 
-        self._write_asset_to_node(asset_name, asset_id)
-        print(f"[Publisher Setup] Using existing asset '{asset_name}' (id: {asset_id})")
+        # Look up components from predefined asset definitions by name/type
+        comps = self._get_components_for_asset(asset_name, asset_type)
+
+        self._write_asset_to_node(asset_name, asset_id, components=comps)
+
+        # Store asset_type on the node
+        if MAYA_AVAILABLE and asset_type:
+            if not cmds.attributeQuery("asset_type", node=self._node, exists=True):
+                cmds.addAttr(self._node, longName="asset_type", dataType="string")
+            cmds.setAttr(f"{self._node}.asset_type", asset_type, type="string")
+
+        print(f"[Publisher Setup] Using existing asset '{asset_name}' (id: {asset_id}, components: {comps})")
 
     # ------------------------------------------------------------------
     def _on_apply_new(self):
@@ -375,6 +389,19 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             f"[Publisher Setup] Applied new asset '{asset_name}' "
             f"(type: {adef.get('type', '')}, components: {comps})"
         )
+
+    # ------------------------------------------------------------------
+    def _get_components_for_asset(self, asset_name: str, asset_type: str) -> list[str]:
+        """Look up components from predefined asset definitions by type or name."""
+        # Match by type first (case-insensitive)
+        for adef in self._asset_defs:
+            if adef.get("type", "").lower() == asset_type.lower():
+                return adef.get("components", [])
+        # Fall back to matching by name (case-insensitive)
+        for adef in self._asset_defs:
+            if adef.get("name", "").lower() == asset_name.lower():
+                return adef.get("components", [])
+        return []
 
     # ------------------------------------------------------------------
     def _write_asset_to_node(
