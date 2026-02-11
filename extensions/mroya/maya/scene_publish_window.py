@@ -139,9 +139,15 @@ class ScenePublishWindow(QtWidgets.QDialog):
 
             task_display = get_task_path(task_id) if task_id else ""
 
-            components_str = ""
+            # Read components dict
+            comp_dict = {}
             if cmds.attributeQuery("components", node=node, exists=True):
-                components_str = cmds.getAttr(f"{node}.components") or ""
+                raw = cmds.getAttr(f"{node}.components") or ""
+                if raw:
+                    try:
+                        comp_dict = json.loads(raw)
+                    except Exception:
+                        comp_dict = {c.strip(): False for c in raw.split(",") if c.strip()}
 
             self._results_table.setItem(row, 0, QtWidgets.QTableWidgetItem(task_display))
             self._results_table.setItem(row, 1, QtWidgets.QTableWidgetItem(asset_name))
@@ -151,14 +157,18 @@ class ScenePublishWindow(QtWidgets.QDialog):
             comp_layout = QtWidgets.QVBoxLayout(comp_widget)
             comp_layout.setContentsMargins(4, 2, 4, 2)
             comp_layout.setSpacing(2)
-            if components_str:
-                for comp_name in components_str.split(", "):
-                    cb = QtWidgets.QCheckBox(comp_name.strip())
-                    comp_layout.addWidget(cb)
+            for comp_name, to_publish in comp_dict.items():
+                cb = QtWidgets.QCheckBox(comp_name)
+                cb.setChecked(bool(to_publish))
+                cb.stateChanged.connect(
+                    lambda state, n=node, c=comp_name: self._on_comp_checkbox_changed(n, c, state)
+                )
+                comp_layout.addWidget(cb)
             self._results_table.setCellWidget(row, 2, comp_widget)
 
             # Adjust row height to fit checkboxes
-            row_height = max(30, 24 * max(1, len(components_str.split(", "))) + 8) if components_str else 30
+            num_comps = max(1, len(comp_dict))
+            row_height = max(30, 24 * num_comps + 8) if comp_dict else 30
             self._results_table.setRowHeight(row, row_height)
 
             setup_btn = QtWidgets.QPushButton("Setup Publisher")
@@ -168,6 +178,20 @@ class ScenePublishWindow(QtWidgets.QDialog):
             self._results_table.setCellWidget(row, 3, setup_btn)
 
         self._status_label.setText(f"Found {len(publish_nodes)} publish node(s)")
+
+    def _on_comp_checkbox_changed(self, node: str, comp_name: str, state: int):
+        """Update the ToPublish flag in the components dict on the node."""
+        if not MAYA_AVAILABLE:
+            return
+        if not cmds.attributeQuery("components", node=node, exists=True):
+            return
+        raw = cmds.getAttr(f"{node}.components") or ""
+        try:
+            comp_dict = json.loads(raw)
+        except Exception:
+            return
+        comp_dict[comp_name] = bool(state)
+        cmds.setAttr(f"{node}.components", json.dumps(comp_dict), type="string")
 
     def _on_setup_publisher(self, node: str):
         """Open the Publisher Setup window for a given node."""
@@ -307,6 +331,31 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         layout.addLayout(btn_layout)
 
     # ------------------------------------------------------------------
+    def _read_components_dict(self) -> dict:
+        """Read the components attribute from the node as a dict."""
+        if not MAYA_AVAILABLE:
+            return {}
+        if not cmds.attributeQuery("components", node=self._node, exists=True):
+            return {}
+        raw = cmds.getAttr(f"{self._node}.components") or ""
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            # Legacy comma-separated format fallback
+            return {c.strip(): False for c in raw.split(",") if c.strip()}
+
+    def _save_components_dict(self, comp_dict: dict):
+        """Write the components dict to the node attribute as JSON."""
+        if not MAYA_AVAILABLE:
+            return
+        if not cmds.attributeQuery("components", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="components", dataType="string")
+        cmds.setAttr(
+            f"{self._node}.components", json.dumps(comp_dict), type="string"
+        )
+
     def _refresh_components_list(self):
         """Rebuild the components list from the node's components attribute."""
         # Clear existing rows
@@ -319,20 +368,15 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         if not MAYA_AVAILABLE:
             return
 
-        components_str = ""
-        if cmds.attributeQuery("components", node=self._node, exists=True):
-            components_str = cmds.getAttr(f"{self._node}.components") or ""
+        comp_dict = self._read_components_dict()
 
-        if not components_str:
+        if not comp_dict:
             label = QtWidgets.QLabel("No components")
             label.setStyleSheet("color: #888; font-style: italic;")
             self._comp_list_layout.addWidget(label)
             return
 
-        for comp_name in components_str.split(", "):
-            comp_name = comp_name.strip()
-            if not comp_name:
-                continue
+        for comp_name in comp_dict:
             row_widget = QtWidgets.QWidget()
             row_layout = QtWidgets.QHBoxLayout(row_widget)
             row_layout.setContentsMargins(20, 0, 0, 0)
@@ -362,15 +406,9 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         if not MAYA_AVAILABLE:
             return
 
-        components_str = ""
-        if cmds.attributeQuery("components", node=self._node, exists=True):
-            components_str = cmds.getAttr(f"{self._node}.components") or ""
-
-        comp_list = [c.strip() for c in components_str.split(", ") if c.strip()]
-        comp_list = [c for c in comp_list if c != comp_name]
-
-        new_str = ", ".join(comp_list)
-        cmds.setAttr(f"{self._node}.components", new_str, type="string")
+        comp_dict = self._read_components_dict()
+        comp_dict.pop(comp_name, None)
+        self._save_components_dict(comp_dict)
 
         print(f"[Publisher Setup] Deleted component '{comp_name}' from {self._node}")
         self._refresh_components_list()
@@ -414,26 +452,17 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         if not MAYA_AVAILABLE:
             return
 
-        # Read existing components
-        components_str = ""
-        if cmds.attributeQuery("components", node=self._node, exists=True):
-            components_str = cmds.getAttr(f"{self._node}.components") or ""
-
-        comp_list = [c.strip() for c in components_str.split(", ") if c.strip()]
+        comp_dict = self._read_components_dict()
 
         # Check for duplicate
-        if comp_full in comp_list:
+        if comp_full in comp_dict:
             QtWidgets.QMessageBox.warning(
                 self, "Duplicate", f"Component '{comp_full}' already exists."
             )
             return
 
-        comp_list.append(comp_full)
-        new_str = ", ".join(comp_list)
-
-        if not cmds.attributeQuery("components", node=self._node, exists=True):
-            cmds.addAttr(self._node, longName="components", dataType="string")
-        cmds.setAttr(f"{self._node}.components", new_str, type="string")
+        comp_dict[comp_full] = False
+        self._save_components_dict(comp_dict)
 
         print(f"[Publisher Setup] Added component '{comp_full}' to {self._node}")
         self._refresh_components_list()
@@ -583,12 +612,14 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             cmds.addAttr(self._node, longName="asset_id", dataType="string")
         cmds.setAttr(f"{self._node}.asset_id", asset_id, type="string")
 
-        # Write components attribute
+        # Write components attribute as JSON dict {name: ToPublish}
         if components is not None:
-            comp_str = ", ".join(components)
+            comp_dict = {c: False for c in components}
             if not cmds.attributeQuery("components", node=self._node, exists=True):
                 cmds.addAttr(self._node, longName="components", dataType="string")
-            cmds.setAttr(f"{self._node}.components", comp_str, type="string")
+            cmds.setAttr(
+                f"{self._node}.components", json.dumps(comp_dict), type="string"
+            )
 
         # Rename node to ftrack_publish_{AssetName}
         new_name = f"ftrack_publish_{asset_name}"
