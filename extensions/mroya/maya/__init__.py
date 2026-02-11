@@ -13,7 +13,7 @@ from .reference_nodes import (
     create_ftrack_reference_node,
 )
 from .scene_resource_window import open_scene_resource_window
-from .scene_publish_window import open_scene_publish_window
+from .scene_publish_window import open_scene_publish_window, open_publish_window
 
 __all__ = [
     "get_component_path_by_id",
@@ -23,4 +23,5 @@ __all__ = [
     "create_ftrack_reference_node",
     "open_scene_resource_window",
     "open_scene_publish_window",
+    "open_publish_window",
 ]

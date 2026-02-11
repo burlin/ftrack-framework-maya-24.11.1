@@ -267,6 +267,19 @@ def open_scene_publish_inspector(*_args, **_kwargs) -> None:
         print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
 
 
+def open_publish_callback(*_args, **_kwargs) -> None:
+    """Open the Publish window."""
+    _bootstrap_python_paths()
+
+    try:
+        from mroya.maya.scene_publish_window import open_publish_window
+        open_publish_window()
+    except Exception as exc:
+        import traceback
+        print(f"[mroya_maya_taskhub] Failed to open Publish window: {exc}")
+        print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
+
+
 def create_publisher_node_new(*_args, **_kwargs) -> None:
     """Create publisher node using the new create_publisher_node module."""
     _bootstrap_python_paths()
@@ -611,6 +624,14 @@ def install_menu() -> None:
             label="Scene Publish Inspector",
             parent=menu,
             command=lambda *_a, **_k: open_scene_publish_inspector(),
+        )
+
+        # Publish
+        cmds.menuItem(
+            "MroyaPublish",
+            label="Publish",
+            parent=menu,
+            command=lambda *_a, **_k: open_publish_callback(),
         )
 
         # Old publisher node creation (to be removed later)

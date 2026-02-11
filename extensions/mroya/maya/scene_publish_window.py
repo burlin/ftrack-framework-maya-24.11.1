@@ -806,3 +806,225 @@ def open_scene_publish_window():
         _log.error("Failed to open Scene Publish Inspector: %s", exc)
         print(f"[Scene Publish Inspector] Failed to open: {exc}")
         return None
+
+
+# ======================================================================
+# Publish Window
+# ======================================================================
+
+_publish_window_instance = None
+
+
+class PublishWindow(QtWidgets.QDialog):
+    """Window showing assets and components marked for publish."""
+
+    def __init__(self, parent=None):
+        if not PYSIDE_AVAILABLE:
+            raise RuntimeError("PySide6 or PySide2 is required")
+        if parent is None:
+            parent = _get_maya_main_window()
+        super().__init__(parent)
+
+        self.setWindowTitle("Publish")
+        self.setMinimumSize(600, 400)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        # --- Assets / components tree ---
+        self._tree = QtWidgets.QTreeWidget()
+        self._tree.setHeaderLabels(["Asset / Component", "Objects"])
+        self._tree.setAlternatingRowColors(True)
+        self._tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self._tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        layout.addWidget(self._tree)
+
+        # --- Buttons ---
+        btn_layout = QtWidgets.QHBoxLayout()
+        self._publish_btn = QtWidgets.QPushButton("Publish")
+        self._publish_btn.clicked.connect(self._on_publish)
+        btn_layout.addWidget(self._publish_btn)
+        btn_layout.addStretch(1)
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        self._publish_data: list[dict] = []
+        self._scan()
+
+    def _scan(self):
+        """Scan scene for publish nodes with components marked for publish."""
+        self._tree.clear()
+        self._publish_data.clear()
+
+        if not MAYA_AVAILABLE:
+            return
+
+        all_network_nodes = cmds.ls(type="network") or []
+        for node in all_network_nodes:
+            if not cmds.attributeQuery("task_id", node=node, exists=True):
+                continue
+
+            # Read asset name
+            asset_name = ""
+            if cmds.attributeQuery("asset_name", node=node, exists=True):
+                asset_name = cmds.getAttr(f"{node}.asset_name") or ""
+            asset_name = asset_name or "Unnamed"
+
+            # Read components dict
+            comp_dict = {}
+            if cmds.attributeQuery("components", node=node, exists=True):
+                raw = cmds.getAttr(f"{node}.components") or ""
+                if raw:
+                    try:
+                        comp_dict = json.loads(raw)
+                    except Exception:
+                        pass
+
+            # Filter to only components marked for publish
+            to_publish = {k: v for k, v in comp_dict.items() if v}
+            if not to_publish:
+                continue
+
+            # Read object lists
+            obj_lists = {}
+            if cmds.attributeQuery("components_object_lists", node=node, exists=True):
+                raw_obj = cmds.getAttr(f"{node}.components_object_lists") or ""
+                if raw_obj:
+                    try:
+                        obj_lists = json.loads(raw_obj)
+                    except Exception:
+                        pass
+
+            # Build tree
+            asset_item = QtWidgets.QTreeWidgetItem([asset_name, ""])
+            asset_item.setExpanded(True)
+
+            asset_data = {"node": node, "asset_name": asset_name, "components": []}
+
+            for comp_name in to_publish:
+                objects = obj_lists.get(comp_name, [])
+                objects_str = ", ".join(objects) if objects else "(no objects)"
+                comp_item = QtWidgets.QTreeWidgetItem([comp_name, objects_str])
+                asset_item.addChild(comp_item)
+                asset_data["components"].append({
+                    "component": comp_name,
+                    "objects": objects,
+                })
+
+            self._tree.addTopLevelItem(asset_item)
+            self._publish_data.append(asset_data)
+
+        if not self._publish_data:
+            empty_item = QtWidgets.QTreeWidgetItem(
+                ["No components marked for publish", ""]
+            )
+            self._tree.addTopLevelItem(empty_item)
+            self._publish_btn.setEnabled(False)
+
+    def _on_publish(self):
+        """Save component files to a temp folder next to the scene file."""
+        if not MAYA_AVAILABLE:
+            return
+
+        # Check if scene is saved
+        scene_path = cmds.file(query=True, sceneName=True)
+        if not scene_path:
+            QtWidgets.QMessageBox.warning(
+                self, "Scene Not Saved",
+                "Please save the scene before publishing."
+            )
+            return
+
+        scene_file = Path(scene_path)
+        scene_dir = scene_file.parent
+        scene_stem = scene_file.stem  # filename without extension
+
+        # Create tmp folder
+        tmp_dir = scene_dir / f"tmp_{scene_stem}"
+        tmp_dir.mkdir(exist_ok=True)
+
+        print("=" * 60)
+        print("PUBLISH")
+        print("=" * 60)
+
+        for asset_data in self._publish_data:
+            asset_name = asset_data["asset_name"]
+            print(f"\nAsset: {asset_name}  (node: {asset_data['node']})")
+
+            for comp_data in asset_data["components"]:
+                comp_name = comp_data["component"]
+                objects = comp_data["objects"]
+
+                # Write file with component name (e.g. camera.fbx)
+                file_path = tmp_dir / comp_name
+                with open(file_path, "w") as f:
+                    for obj in objects:
+                        f.write(f"{obj}\n")
+
+                print(f"  Component: {comp_name} -> {file_path}")
+                if objects:
+                    for obj in objects:
+                        print(f"    - {obj}")
+                else:
+                    print("    (no objects)")
+
+        print(f"\nFiles saved to: {tmp_dir}")
+        print("=" * 60)
+
+        QtWidgets.QMessageBox.information(
+            self, "Publish Complete",
+            f"Files saved to:\n{tmp_dir}"
+        )
+
+
+def open_publish_window():
+    """Open the Publish window.
+
+    Returns:
+        The window instance, or None if failed.
+    """
+    global _publish_window_instance
+
+    if not MAYA_AVAILABLE:
+        _log.error("Maya is not available")
+        print("[Publish] Maya is not available")
+        return None
+
+    if not PYSIDE_AVAILABLE:
+        _log.error("PySide6/PySide2 is not available")
+        print("[Publish] PySide is not available")
+        return None
+
+    if _publish_window_instance is not None:
+        try:
+            if _publish_window_instance.isVisible():
+                _publish_window_instance.raise_()
+                _publish_window_instance.activateWindow()
+                return _publish_window_instance
+        except Exception:
+            pass
+        _publish_window_instance = None
+
+    try:
+        _publish_window_instance = PublishWindow()
+        _publish_window_instance.show()
+        _publish_window_instance.raise_()
+        _publish_window_instance.activateWindow()
+
+        def _on_close():
+            global _publish_window_instance
+            _publish_window_instance = None
+
+        _publish_window_instance.finished.connect(_on_close)
+
+        print("[Publish] Window opened")
+        return _publish_window_instance
+
+    except Exception as exc:
+        _log.error("Failed to open Publish window: %s", exc)
+        print(f"[Publish] Failed to open: {exc}")
+        return None
