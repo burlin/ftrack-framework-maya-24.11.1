@@ -1029,18 +1029,41 @@ class PublishWindow(QtWidgets.QDialog):
             # Export component files and build component list
             comp_list = []
             export_failed = False
+            temp_cameras = []  # track baked cameras for cleanup
+
+            try:
+                from .exporters import export_component
+            except ImportError:
+                from exporters import export_component
+
+            try:
+                from .camera_export import is_camera, prepare_camera, cleanup_temp_camera
+            except ImportError:
+                from camera_export import is_camera, prepare_camera, cleanup_temp_camera
+
             for comp_data in asset_data["components"]:
                 comp_name = comp_data["component"]
                 objects = comp_data["objects"]
                 file_path = str(tmp_dir / comp_name)
 
-                try:
-                    from .exporters import export_component
-                except ImportError:
-                    from exporters import export_component
+                # If any object is a camera, bake it first and export the baked copy
+                export_objects = list(objects)
+                for obj in objects:
+                    if is_camera(obj):
+                        try:
+                            baked = prepare_camera(obj)
+                            temp_cameras.append(baked)
+                            # Replace the original camera with the baked one
+                            export_objects = [
+                                baked if o == obj else o for o in export_objects
+                            ]
+                            print(f"[Publish] Baked camera '{obj}' → '{baked}'")
+                        except Exception as exc:
+                            _log.error("Camera bake failed for %s: %s", obj, exc)
+                            print(f"[Publish] Camera bake FAILED for '{obj}': {exc}")
 
                 try:
-                    export_component(objects, file_path)
+                    export_component(export_objects, file_path)
                 except Exception as exc:
                     _log.error("Export failed for %s: %s", comp_name, exc)
                     print(f"[Publish] Export FAILED for '{comp_name}': {exc}")
@@ -1054,6 +1077,14 @@ class PublishWindow(QtWidgets.QDialog):
                     "file_path": file_path,
                     "component_type": "file",
                 })
+
+            # Clean up temp baked cameras
+            for tc in temp_cameras:
+                try:
+                    cleanup_temp_camera(tc)
+                    print(f"[Publish] Cleaned up temp camera: {tc}")
+                except Exception as exc:
+                    _log.warning("Failed to delete temp camera %s: %s", tc, exc)
 
             if export_failed and not comp_list:
                 results.append((asset_name, PublishResult(
