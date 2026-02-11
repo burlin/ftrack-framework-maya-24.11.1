@@ -853,6 +853,15 @@ class PublishWindow(QtWidgets.QDialog):
         cam_layout.addWidget(self._camera_combo)
         layout.addLayout(cam_layout)
 
+        # --- Snapshot row ---
+        snap_layout = QtWidgets.QHBoxLayout()
+        snap_layout.addWidget(QtWidgets.QLabel("Snapshot format:"))
+        self._snapshot_combo = QtWidgets.QComboBox()
+        self._snapshot_combo.addItems([".ma", ".mb"])
+        snap_layout.addWidget(self._snapshot_combo)
+        snap_layout.addStretch(1)
+        layout.addLayout(snap_layout)
+
         # --- Assets / components tree ---
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setHeaderLabels(["Asset / Component", "Objects"])
@@ -1107,6 +1116,25 @@ class PublishWindow(QtWidgets.QDialog):
                     "file_path": playblast_path,
                     "component_type": "playblast",
                 })
+
+            # Add mandatory snapshot component
+            snap_ext = self._snapshot_combo.currentText()  # ".ma" or ".mb"
+            snap_file = str(tmp_dir / f"snapshot{snap_ext}")
+            try:
+                try:
+                    from .exporters import save_snapshot
+                except ImportError:
+                    from exporters import save_snapshot
+                save_snapshot(snap_file)
+                comp_list.append({
+                    "name": "snapshot",
+                    "file_path": snap_file,
+                    "component_type": "file",
+                })
+                print(f"[Publish] Snapshot saved: {snap_file}")
+            except Exception as exc:
+                _log.error("Snapshot save failed: %s", exc)
+                print(f"[Publish] Snapshot FAILED: {exc}")
 
             # Build PublishJob via JobBuilder.from_dict
             job_data = {

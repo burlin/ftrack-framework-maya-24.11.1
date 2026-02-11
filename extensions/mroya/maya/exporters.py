@@ -121,6 +121,29 @@ _EXPORTERS = {
 }
 
 
+def save_snapshot(file_path: str) -> str:
+    """Save the current Maya scene as a snapshot (ma or mb).
+
+    Args:
+        file_path: Destination path. Extension determines format
+                   (``.ma`` → mayaAscii, ``.mb`` → mayaBinary).
+
+    Returns:
+        The file path of the saved snapshot.
+    """
+    ext = Path(file_path).suffix.lstrip(".").lower()
+    file_type = "mayaBinary" if ext == "mb" else "mayaAscii"
+
+    cmds.file(
+        _strip_ext(file_path),
+        force=True,
+        type=file_type,
+        exportAll=True,
+    )
+    _log.info("Saved snapshot (%s): %s", file_type, file_path)
+    return file_path
+
+
 def export_component(objects: list[str], file_path: str) -> str:
     """Export objects using the appropriate exporter based on file extension.
 
