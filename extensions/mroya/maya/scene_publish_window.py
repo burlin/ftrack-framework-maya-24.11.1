@@ -838,9 +838,13 @@ class PublishWindow(QtWidgets.QDialog):
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
-        # --- Playblast camera row ---
+        # --- Playblast row ---
         cam_layout = QtWidgets.QHBoxLayout()
-        cam_layout.addWidget(QtWidgets.QLabel("Playblast Camera:"))
+        self._playblast_cb = QtWidgets.QCheckBox("Publish Playblast")
+        self._playblast_cb.setChecked(True)
+        self._playblast_cb.stateChanged.connect(self._on_playblast_toggled)
+        cam_layout.addWidget(self._playblast_cb)
+        cam_layout.addWidget(QtWidgets.QLabel("Camera:"))
         self._camera_combo = QtWidgets.QComboBox()
         self._camera_combo.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
@@ -870,6 +874,10 @@ class PublishWindow(QtWidgets.QDialog):
 
         self._publish_data: list[dict] = []
         self._scan()
+
+    def _on_playblast_toggled(self, state):
+        """Enable/disable camera dropdown based on playblast checkbox."""
+        self._camera_combo.setEnabled(bool(state))
 
     def _populate_cameras(self):
         """Populate the camera dropdown with scene cameras."""
@@ -1002,10 +1010,10 @@ class PublishWindow(QtWidgets.QDialog):
             )
             return
 
-        # Create playblast
+        # Create playblast (only if checkbox is on)
         playblast_path = None
         camera = self._camera_combo.currentText()
-        if camera:
+        if camera and self._playblast_cb.isChecked():
             try:
                 try:
                     from .create_playblast import create_playblast
