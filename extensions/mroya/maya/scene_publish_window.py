@@ -176,16 +176,16 @@ class ScenePublishWindow(QtWidgets.QDialog):
         window.raise_()
 
 
-def _load_asset_definitions() -> list[dict]:
-    """Load predefined asset definitions from asset_definitions.json."""
+def _load_asset_definitions() -> tuple[list[dict], list[str]]:
+    """Load predefined asset definitions and extensions from asset_definitions.json."""
     json_path = Path(__file__).resolve().parents[3] / "resource" / "asset_definitions.json"
     try:
         with open(json_path, "r") as f:
             data = json.load(f)
-        return data.get("assets", [])
+        return data.get("assets", []), data.get("extensions", [])
     except Exception as exc:
         _log.error("Failed to load asset_definitions.json (%s): %s", json_path, exc)
-        return []
+        return [], []
 
 
 class PublisherSetupWindow(QtWidgets.QDialog):
@@ -197,7 +197,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         self._existing_names: set[str] = set()
         self._existing_ids: dict[str, str] = {}
         self._existing_types: dict[str, str] = {}
-        self._asset_defs = _load_asset_definitions()
+        self._asset_defs, self._extensions = _load_asset_definitions()
 
         # Read task_id from the node
         self._task_id = ""
@@ -263,6 +263,41 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         ex_layout.addWidget(self._use_ex_btn)
         layout.addLayout(ex_layout)
 
+        # --- Components list ---
+        comp_header = QtWidgets.QHBoxLayout()
+        comp_header.addWidget(QtWidgets.QLabel("Components:"))
+        comp_header.addStretch(1)
+        layout.addLayout(comp_header)
+
+        self._comp_list_widget = QtWidgets.QWidget()
+        self._comp_list_layout = QtWidgets.QVBoxLayout(self._comp_list_widget)
+        self._comp_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._comp_list_layout.setSpacing(4)
+        layout.addWidget(self._comp_list_widget)
+
+        self._refresh_components_list()
+
+        # --- Add component row ---
+        add_comp_layout = QtWidgets.QHBoxLayout()
+        self._comp_name_edit = QtWidgets.QLineEdit()
+        self._comp_name_edit.setPlaceholderText("component name")
+        self._comp_name_edit.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        # Pre-fill default component name based on current asset type
+        self._comp_name_edit.setText(self._get_default_component_name())
+        add_comp_layout.addWidget(self._comp_name_edit)
+
+        self._ext_combo = QtWidgets.QComboBox()
+        for ext in self._extensions:
+            self._ext_combo.addItem(f".{ext}")
+        add_comp_layout.addWidget(self._ext_combo)
+
+        add_comp_btn = QtWidgets.QPushButton("Add Component")
+        add_comp_btn.clicked.connect(self._on_add_component)
+        add_comp_layout.addWidget(add_comp_btn)
+        layout.addLayout(add_comp_layout)
+
         # --- Close ---
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch(1)
@@ -270,6 +305,138 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         close_btn.clicked.connect(self.close)
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
+
+    # ------------------------------------------------------------------
+    def _refresh_components_list(self):
+        """Rebuild the components list from the node's components attribute."""
+        # Clear existing rows
+        while self._comp_list_layout.count():
+            item = self._comp_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        if not MAYA_AVAILABLE:
+            return
+
+        components_str = ""
+        if cmds.attributeQuery("components", node=self._node, exists=True):
+            components_str = cmds.getAttr(f"{self._node}.components") or ""
+
+        if not components_str:
+            label = QtWidgets.QLabel("No components")
+            label.setStyleSheet("color: #888; font-style: italic;")
+            self._comp_list_layout.addWidget(label)
+            return
+
+        for comp_name in components_str.split(", "):
+            comp_name = comp_name.strip()
+            if not comp_name:
+                continue
+            row_widget = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(20, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            row_layout.addWidget(QtWidgets.QLabel(comp_name))
+            row_layout.addStretch(1)
+
+            sel_btn = QtWidgets.QPushButton("Select Objects")
+            sel_btn.clicked.connect(
+                lambda checked=False, c=comp_name: self._on_select_objects(c)
+            )
+            row_layout.addWidget(sel_btn)
+
+            del_btn = QtWidgets.QPushButton("Delete")
+            del_btn.setFixedWidth(60)
+            del_btn.clicked.connect(
+                lambda checked=False, c=comp_name: self._on_delete_component(c)
+            )
+            row_layout.addWidget(del_btn)
+
+            self._comp_list_layout.addWidget(row_widget)
+
+    # ------------------------------------------------------------------
+    def _on_delete_component(self, comp_name: str):
+        """Remove a component from the node's components attribute."""
+        if not MAYA_AVAILABLE:
+            return
+
+        components_str = ""
+        if cmds.attributeQuery("components", node=self._node, exists=True):
+            components_str = cmds.getAttr(f"{self._node}.components") or ""
+
+        comp_list = [c.strip() for c in components_str.split(", ") if c.strip()]
+        comp_list = [c for c in comp_list if c != comp_name]
+
+        new_str = ", ".join(comp_list)
+        cmds.setAttr(f"{self._node}.components", new_str, type="string")
+
+        print(f"[Publisher Setup] Deleted component '{comp_name}' from {self._node}")
+        self._refresh_components_list()
+
+    # ------------------------------------------------------------------
+    def _on_select_objects(self, comp_name: str):
+        """Open the Component Objects window for a given component."""
+        window = ComponentObjectsWindow(self._node, comp_name, parent=self)
+        window.show()
+        window.raise_()
+
+    # ------------------------------------------------------------------
+    def _get_default_component_name(self) -> str:
+        """Return the default component name based on the node's asset type."""
+        if not MAYA_AVAILABLE:
+            return ""
+        asset_type = ""
+        if cmds.attributeQuery("asset_type", node=self._node, exists=True):
+            asset_type = cmds.getAttr(f"{self._node}.asset_type") or ""
+        asset_name = ""
+        if cmds.attributeQuery("asset_name", node=self._node, exists=True):
+            asset_name = cmds.getAttr(f"{self._node}.asset_name") or ""
+        for adef in self._asset_defs:
+            if asset_type and adef.get("type", "").lower() == asset_type.lower():
+                return adef.get("component_name", "")
+            if asset_name and adef.get("name", "").lower() == asset_name.lower():
+                return adef.get("component_name", "")
+        return ""
+
+    # ------------------------------------------------------------------
+    def _on_add_component(self):
+        """Add a new component to the node's components attribute."""
+        name = self._comp_name_edit.text().strip()
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Component name cannot be empty.")
+            return
+
+        ext = self._ext_combo.currentText()  # e.g. ".fbx"
+        comp_full = f"{name}{ext}"
+
+        if not MAYA_AVAILABLE:
+            return
+
+        # Read existing components
+        components_str = ""
+        if cmds.attributeQuery("components", node=self._node, exists=True):
+            components_str = cmds.getAttr(f"{self._node}.components") or ""
+
+        comp_list = [c.strip() for c in components_str.split(", ") if c.strip()]
+
+        # Check for duplicate
+        if comp_full in comp_list:
+            QtWidgets.QMessageBox.warning(
+                self, "Duplicate", f"Component '{comp_full}' already exists."
+            )
+            return
+
+        comp_list.append(comp_full)
+        new_str = ", ".join(comp_list)
+
+        if not cmds.attributeQuery("components", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="components", dataType="string")
+        cmds.setAttr(f"{self._node}.components", new_str, type="string")
+
+        print(f"[Publisher Setup] Added component '{comp_full}' to {self._node}")
+        self._refresh_components_list()
 
     # ------------------------------------------------------------------
     def _on_get_ex_clicked(self):
@@ -430,6 +597,135 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         self.setWindowTitle(f"Publisher Setup - {renamed}")
 
         self._current_label.setText(asset_name)
+        self._refresh_components_list()
+
+
+class ComponentObjectsWindow(QtWidgets.QDialog):
+    """Window for selecting Maya scene objects to associate with a component."""
+
+    def __init__(self, node: str, comp_name: str, parent=None):
+        super().__init__(parent)
+        self._node = node
+        self._comp_name = comp_name
+
+        self.setWindowTitle(f"Select Objects - {comp_name}")
+        self.setMinimumSize(400, 300)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        # --- Header ---
+        header = QtWidgets.QLabel(f"Objects for: {comp_name}")
+        header.setStyleSheet("font-weight: bold;")
+        layout.addWidget(header)
+
+        # --- Object list ---
+        self._obj_list = QtWidgets.QListWidget()
+        layout.addWidget(self._obj_list)
+
+        # --- Buttons ---
+        btn_layout = QtWidgets.QHBoxLayout()
+
+        add_sel_btn = QtWidgets.QPushButton("Add Selected")
+        add_sel_btn.clicked.connect(self._on_add_selected)
+        btn_layout.addWidget(add_sel_btn)
+
+        remove_btn = QtWidgets.QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self._on_remove_selected)
+        btn_layout.addWidget(remove_btn)
+
+        btn_layout.addStretch(1)
+
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        btn_layout.addWidget(close_btn)
+
+        layout.addLayout(btn_layout)
+
+        # Load existing objects
+        self._refresh_list()
+
+    # ------------------------------------------------------------------
+    def _get_object_lists(self) -> dict:
+        """Read the components_object_lists attribute from the node as a dict."""
+        if not MAYA_AVAILABLE:
+            return {}
+        if not cmds.attributeQuery("components_object_lists", node=self._node, exists=True):
+            return {}
+        raw = cmds.getAttr(f"{self._node}.components_object_lists") or ""
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    # ------------------------------------------------------------------
+    def _save_object_lists(self, data: dict):
+        """Write the components_object_lists attribute to the node as JSON."""
+        if not MAYA_AVAILABLE:
+            return
+        if not cmds.attributeQuery("components_object_lists", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="components_object_lists", dataType="string")
+        cmds.setAttr(
+            f"{self._node}.components_object_lists", json.dumps(data), type="string"
+        )
+
+    # ------------------------------------------------------------------
+    def _refresh_list(self):
+        """Reload the object list from the node attribute."""
+        self._obj_list.clear()
+        data = self._get_object_lists()
+        objects = data.get(self._comp_name, [])
+        for obj in objects:
+            self._obj_list.addItem(obj)
+
+    # ------------------------------------------------------------------
+    def _on_add_selected(self):
+        """Add currently selected Maya scene objects to this component's list."""
+        if not MAYA_AVAILABLE:
+            return
+        selection = cmds.ls(selection=True, long=False) or []
+        if not selection:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Nothing selected in the scene.")
+            return
+
+        data = self._get_object_lists()
+        existing = data.get(self._comp_name, [])
+
+        added = []
+        for obj in selection:
+            if obj not in existing:
+                existing.append(obj)
+                added.append(obj)
+
+        data[self._comp_name] = existing
+        self._save_object_lists(data)
+        self._refresh_list()
+
+        if added:
+            print(f"[Select Objects] Added {added} to '{self._comp_name}'")
+
+    # ------------------------------------------------------------------
+    def _on_remove_selected(self):
+        """Remove the selected items from the list."""
+        selected_items = self._obj_list.selectedItems()
+        if not selected_items:
+            return
+
+        data = self._get_object_lists()
+        existing = data.get(self._comp_name, [])
+
+        for item in selected_items:
+            obj_name = item.text()
+            if obj_name in existing:
+                existing.remove(obj_name)
+
+        data[self._comp_name] = existing
+        self._save_object_lists(data)
+        self._refresh_list()
 
 
 def open_scene_publish_window():

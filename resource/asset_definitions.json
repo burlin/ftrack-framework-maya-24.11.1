@@ -1,14 +1,23 @@
 {
+  "extensions": ["fbx", "ma", "usda", "usd", "obj"],
   "assets": [
     {
       "name": "Camera",
       "type": "cam",
+      "component_name": "camera",
       "components": ["camera.fbx", "camera.usd"]
     },
     {
       "name": "Animation",
       "type": "anim",
+      "component_name": "animation",
       "components": ["animation.fbx"]
+    },
+    {
+      "name": "Geometry",
+      "type": "geo",
+      "component_name": "geometry",
+      "components": ["geometry.fbx", "geometry.obj"]
     }
   ]
 }
