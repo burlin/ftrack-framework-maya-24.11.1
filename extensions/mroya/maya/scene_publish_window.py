@@ -432,9 +432,13 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         if cmds.attributeQuery("asset_name", node=self._node, exists=True):
             asset_name = cmds.getAttr(f"{self._node}.asset_name") or ""
         for adef in self._asset_defs:
-            if asset_type and adef.get("type", "").lower() == asset_type.lower():
+            adef_type = adef.get("type", "").lower()
+            adef_name = adef.get("name", "").lower()
+            at = asset_type.lower() if asset_type else ""
+            an = asset_name.lower() if asset_name else ""
+            if at and (at == adef_type or at == adef_name):
                 return adef.get("component_name", "")
-            if asset_name and adef.get("name", "").lower() == asset_name.lower():
+            if an and (an == adef_type or an == adef_name):
                 return adef.get("component_name", "")
         return ""
 
@@ -573,29 +577,30 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         comps = adef.get("components", [])
         self._write_asset_to_node(asset_name, "", components=comps)
 
-        # Store asset_type on the node
+        # Store asset_type on the node (use name for ftrack AssetType compatibility)
         if MAYA_AVAILABLE:
             if not cmds.attributeQuery("asset_type", node=self._node, exists=True):
                 cmds.addAttr(self._node, longName="asset_type", dataType="string")
             cmds.setAttr(
-                f"{self._node}.asset_type", adef.get("type", ""), type="string"
+                f"{self._node}.asset_type", adef.get("name", ""), type="string"
             )
 
         print(
             f"[Publisher Setup] Applied new asset '{asset_name}' "
-            f"(type: {adef.get('type', '')}, components: {comps})"
+            f"(type: {adef.get('name', '')}, components: {comps})"
         )
 
     # ------------------------------------------------------------------
     def _get_components_for_asset(self, asset_name: str, asset_type: str) -> list[str]:
         """Look up components from predefined asset definitions by type or name."""
-        # Match by type first (case-insensitive)
+        at = asset_type.lower() if asset_type else ""
+        an = asset_name.lower() if asset_name else ""
         for adef in self._asset_defs:
-            if adef.get("type", "").lower() == asset_type.lower():
+            adef_type = adef.get("type", "").lower()
+            adef_name = adef.get("name", "").lower()
+            if at and (at == adef_type or at == adef_name):
                 return adef.get("components", [])
-        # Fall back to matching by name (case-insensitive)
-        for adef in self._asset_defs:
-            if adef.get("name", "").lower() == asset_name.lower():
+            if an and (an == adef_type or an == adef_name):
                 return adef.get("components", [])
         return []
 
@@ -833,6 +838,17 @@ class PublishWindow(QtWidgets.QDialog):
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
+        # --- Playblast camera row ---
+        cam_layout = QtWidgets.QHBoxLayout()
+        cam_layout.addWidget(QtWidgets.QLabel("Playblast Camera:"))
+        self._camera_combo = QtWidgets.QComboBox()
+        self._camera_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self._populate_cameras()
+        cam_layout.addWidget(self._camera_combo)
+        layout.addLayout(cam_layout)
+
         # --- Assets / components tree ---
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setHeaderLabels(["Asset / Component", "Objects"])
@@ -855,6 +871,19 @@ class PublishWindow(QtWidgets.QDialog):
         self._publish_data: list[dict] = []
         self._scan()
 
+    def _populate_cameras(self):
+        """Populate the camera dropdown with scene cameras."""
+        self._camera_combo.clear()
+        if not MAYA_AVAILABLE:
+            return
+        try:
+            from .create_playblast import get_scene_cameras
+        except ImportError:
+            from create_playblast import get_scene_cameras
+        cameras = get_scene_cameras()
+        for cam in cameras:
+            self._camera_combo.addItem(cam)
+
     def _scan(self):
         """Scan scene for publish nodes with components marked for publish."""
         self._tree.clear()
@@ -868,11 +897,21 @@ class PublishWindow(QtWidgets.QDialog):
             if not cmds.attributeQuery("task_id", node=node, exists=True):
                 continue
 
-            # Read asset name
+            # Read node attributes
+            task_id = cmds.getAttr(f"{node}.task_id") or ""
+
             asset_name = ""
             if cmds.attributeQuery("asset_name", node=node, exists=True):
                 asset_name = cmds.getAttr(f"{node}.asset_name") or ""
             asset_name = asset_name or "Unnamed"
+
+            asset_id = ""
+            if cmds.attributeQuery("asset_id", node=node, exists=True):
+                asset_id = cmds.getAttr(f"{node}.asset_id") or ""
+
+            asset_type = ""
+            if cmds.attributeQuery("asset_type", node=node, exists=True):
+                asset_type = cmds.getAttr(f"{node}.asset_type") or ""
 
             # Read components dict
             comp_dict = {}
@@ -903,7 +942,14 @@ class PublishWindow(QtWidgets.QDialog):
             asset_item = QtWidgets.QTreeWidgetItem([asset_name, ""])
             asset_item.setExpanded(True)
 
-            asset_data = {"node": node, "asset_name": asset_name, "components": []}
+            asset_data = {
+                "node": node,
+                "task_id": task_id,
+                "asset_name": asset_name,
+                "asset_id": asset_id,
+                "asset_type": asset_type,
+                "components": [],
+            }
 
             for comp_name in to_publish:
                 objects = obj_lists.get(comp_name, [])
@@ -926,7 +972,7 @@ class PublishWindow(QtWidgets.QDialog):
             self._publish_btn.setEnabled(False)
 
     def _on_publish(self):
-        """Save component files to a temp folder next to the scene file."""
+        """Save temp component files and publish via ftrack_inout Publisher."""
         if not MAYA_AVAILABLE:
             return
 
@@ -941,44 +987,133 @@ class PublishWindow(QtWidgets.QDialog):
 
         scene_file = Path(scene_path)
         scene_dir = scene_file.parent
-        scene_stem = scene_file.stem  # filename without extension
+        scene_stem = scene_file.stem
 
         # Create tmp folder
         tmp_dir = scene_dir / f"tmp_{scene_stem}"
         tmp_dir.mkdir(exist_ok=True)
 
-        print("=" * 60)
-        print("PUBLISH")
-        print("=" * 60)
+        try:
+            from ftrack_inout.publisher.core import JobBuilder, Publisher, PublishResult
+        except ImportError as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Import Error",
+                f"ftrack_inout.publisher.core is not available:\n{exc}"
+            )
+            return
 
+        # Create playblast
+        playblast_path = None
+        camera = self._camera_combo.currentText()
+        if camera:
+            try:
+                try:
+                    from .create_playblast import create_playblast
+                except ImportError:
+                    from create_playblast import create_playblast
+                playblast_path = create_playblast(camera)
+                print(f"[Publish] Playblast created: {playblast_path}")
+            except Exception as exc:
+                _log.error("Playblast creation failed: %s", exc)
+                print(f"[Publish] Playblast FAILED: {exc}")
+
+        session = _get_ftrack_session()
+
+        results = []
         for asset_data in self._publish_data:
             asset_name = asset_data["asset_name"]
-            print(f"\nAsset: {asset_name}  (node: {asset_data['node']})")
+            task_id = asset_data["task_id"]
+            asset_id = asset_data["asset_id"]
+            asset_type = asset_data["asset_type"]
 
+            # Export component files and build component list
+            comp_list = []
+            export_failed = False
             for comp_data in asset_data["components"]:
                 comp_name = comp_data["component"]
                 objects = comp_data["objects"]
+                file_path = str(tmp_dir / comp_name)
 
-                # Write file with component name (e.g. camera.fbx)
-                file_path = tmp_dir / comp_name
-                with open(file_path, "w") as f:
-                    for obj in objects:
-                        f.write(f"{obj}\n")
+                try:
+                    from .exporters import export_component
+                except ImportError:
+                    from exporters import export_component
 
-                print(f"  Component: {comp_name} -> {file_path}")
-                if objects:
-                    for obj in objects:
-                        print(f"    - {obj}")
-                else:
-                    print("    (no objects)")
+                try:
+                    export_component(objects, file_path)
+                except Exception as exc:
+                    _log.error("Export failed for %s: %s", comp_name, exc)
+                    print(f"[Publish] Export FAILED for '{comp_name}': {exc}")
+                    export_failed = True
+                    continue
 
-        print(f"\nFiles saved to: {tmp_dir}")
-        print("=" * 60)
+                # Strip extension from name — ftrack adds it from the file
+                comp_name_no_ext = Path(comp_name).stem
+                comp_list.append({
+                    "name": comp_name_no_ext,
+                    "file_path": file_path,
+                    "component_type": "file",
+                })
 
-        QtWidgets.QMessageBox.information(
-            self, "Publish Complete",
-            f"Files saved to:\n{tmp_dir}"
-        )
+            if export_failed and not comp_list:
+                results.append((asset_name, PublishResult(
+                    success=False, error_message="All exports failed"
+                )))
+                continue
+
+            # Add playblast component
+            if playblast_path:
+                comp_list.append({
+                    "name": "playblast",
+                    "file_path": playblast_path,
+                    "component_type": "playblast",
+                })
+
+            # Build PublishJob via JobBuilder.from_dict
+            job_data = {
+                "task_id": task_id,
+                "asset_name": asset_name,
+                "asset_type": asset_type,
+                "components": comp_list,
+                "source_dcc": "maya",
+                "source_scene": scene_path,
+            }
+            if asset_id:
+                job_data["asset_id"] = asset_id
+
+            job = JobBuilder.from_dict(job_data)
+
+            # Execute publish
+            publisher = Publisher(session=session, dry_run=(session is None))
+            result = publisher.execute(job)
+            results.append((asset_name, result))
+
+        # Show results
+        success_count = sum(1 for _, r in results if r.success)
+        fail_count = len(results) - success_count
+
+        msg_lines = []
+        for asset_name, result in results:
+            if result.success:
+                ver = result.asset_version_number or "?"
+                msg_lines.append(f"{asset_name}: v{ver} published OK")
+            else:
+                msg_lines.append(f"{asset_name}: FAILED - {result.error_message}")
+
+        summary = "\n".join(msg_lines)
+        print(f"\n[Publish] {success_count} succeeded, {fail_count} failed")
+        print(summary)
+
+        if fail_count > 0:
+            QtWidgets.QMessageBox.warning(
+                self, "Publish Results",
+                f"{success_count} succeeded, {fail_count} failed:\n\n{summary}"
+            )
+        else:
+            QtWidgets.QMessageBox.information(
+                self, "Publish Complete",
+                f"All {success_count} asset(s) published successfully.\n\n{summary}"
+            )
 
 
 def open_publish_window():
