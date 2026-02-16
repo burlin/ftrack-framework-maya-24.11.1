@@ -312,6 +312,19 @@ def create_publisher_node_old(*_args, **_kwargs) -> None:
         print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
 
 
+def open_scene_inspector_callback(*_args, **_kwargs) -> None:
+    """Open the Scene Inspector (resource) window."""
+    _bootstrap_python_paths()
+
+    try:
+        from mroya.maya.scene_resource_window import open_scene_resource_window
+        open_scene_resource_window()
+    except Exception as exc:
+        import traceback
+        print(f"[mroya_maya_taskhub] Failed to open Scene Inspector: {exc}")
+        print(f"[mroya_maya_taskhub] Traceback:\n{traceback.format_exc()}")
+
+
 def open_ftrack_input_window_callback(*_args, **_kwargs) -> None:
     """Open Ftrack Input window (finput-like loader) from menu."""
     _bootstrap_python_paths()
@@ -574,6 +587,7 @@ def install_menu() -> None:
         existing_items = cmds.menu(menu, q=True, itemArray=True) or []
         old_labels = {
             "Open Task Browser", "Open User Tasks", "Ftrack Input",
+            "Scene Inspector",
             "Create Publisher Node", "Create Publisher Node _OLD",
             "Scene Publish Inspector",
             "Publisher UI", "Publisher Test", "Publish",
@@ -607,8 +621,16 @@ def install_menu() -> None:
             command=lambda *_a, **_k: open_ftrack_input_window_callback(),
         )
 
-        # Separator before Publisher section
+        # Separator before ftrack inout section
         cmds.menuItem(divider=True, parent=menu)
+
+        # Scene Inspector (scene resource window)
+        cmds.menuItem(
+            "MroyaSceneInspector",
+            label="Scene Inspector",
+            parent=menu,
+            command=lambda *_a, **_k: open_scene_inspector_callback(),
+        )
 
         # New publisher node creation
         cmds.menuItem(
