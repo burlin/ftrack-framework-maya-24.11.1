@@ -95,6 +95,10 @@ def create_ftrack_reference_node(
             cmds.setAttr(f'{node}.{attr_name}', attr_value, type='string')
             _log.debug("Set %s.%s = %s", node, attr_name, attr_value)
 
+        # Boolean: whether the component has been added/referenced into the scene
+        cmds.addAttr(node, longName='added_to_scene', attributeType='bool')
+        cmds.setAttr(f'{node}.added_to_scene', False)
+
         return node
 
     except Exception as exc:

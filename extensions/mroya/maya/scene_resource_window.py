@@ -14,13 +14,18 @@ import os
 
 try:
     from . import adding_component
-    from .ftrack_session import get_versions_with_component, get_component_path_by_id
     from .reference_file import replace_reference
 except ImportError:
     # Fallback for testing if not in a package
     import adding_component
-    from ftrack_session import get_versions_with_component, get_component_path_by_id
     from reference_file import replace_reference
+
+from ftrack_inout.input.dcc.maya import get_session_for_maya
+from ftrack_inout.input.core import (
+    load_asset_version_component_data,
+    resolve_component_to_select,
+    resolve_component_path,
+)
 
 try:
     import maya.cmds as cmds
@@ -73,6 +78,8 @@ class SceneResourceWindow(QtWidgets.QDialog):
         if parent is None:
             parent = _get_maya_main_window()
         super().__init__(parent)
+
+        self._session = get_session_for_maya()
 
         self.setWindowTitle("Scene Resource Window")
         self.setMinimumSize(600, 400)  # Made slightly wider for the new column
@@ -152,14 +159,31 @@ class SceneResourceWindow(QtWidgets.QDialog):
 
             # --- Column 1: Version dropdown ---
             version_combo = QtWidgets.QComboBox()
-            versions = get_versions_with_component(asset_id, raw_component_name) if asset_id and raw_component_name else []
+            cached = None
+            if asset_id and self._session:
+                cached = load_asset_version_component_data(
+                    self._session, asset_id, force_refresh=True
+                )
             current_index = 0
-            for i, v in enumerate(versions):
-                label = f"v{v['version']}"
-                version_combo.addItem(label, v)
-                if v["version_id"] == current_version_id:
-                    current_index = i
-            if not versions:
+            if cached:
+                idx = 0
+                for v in cached["version_info"]:
+                    version_id = v["id"]
+                    comp_id = resolve_component_to_select(
+                        cached, version_id,
+                        component_to_select_name=raw_component_name,
+                    ) if raw_component_name else None
+                    if not comp_id:
+                        continue
+                    version_combo.addItem(v["name"], {
+                        "version": v["version"],
+                        "version_id": version_id,
+                        "component_id": comp_id,
+                    })
+                    if version_id == current_version_id:
+                        current_index = idx
+                    idx += 1
+            if version_combo.count() == 0:
                 version_combo.addItem("—")
                 version_combo.setEnabled(False)
             else:
@@ -169,6 +193,11 @@ class SceneResourceWindow(QtWidgets.QDialog):
             # --- Column 2: Component ---
             self._results_table.setItem(row, 2, QtWidgets.QTableWidgetItem(component_display))
 
+            # Read added_to_scene flag
+            added = False
+            if cmds.attributeQuery('added_to_scene', node=node, exists=True):
+                added = bool(cmds.getAttr(f"{node}.added_to_scene"))
+
             # --- Column 3: Actions ---
             action_widget = QtWidgets.QWidget()
             action_layout = QtWidgets.QHBoxLayout(action_widget)
@@ -177,14 +206,24 @@ class SceneResourceWindow(QtWidgets.QDialog):
 
             combo = QtWidgets.QComboBox()
             combo.addItems(["reference", "import"])
+            if added and cmds.attributeQuery('ftrack_add_method', node=node, exists=True):
+                stored_method = cmds.getAttr(f"{node}.ftrack_add_method") or ""
+                idx = combo.findText(stored_method)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            if added:
+                combo.setEnabled(False)
 
             reimport_btn = QtWidgets.QPushButton("Reimport")
             reimport_btn.setFixedWidth(65)
-            reimport_btn.clicked.connect(lambda checked=False, n=node, vc=version_combo: self._on_reimport_clicked(n, vc))
+            reimport_btn.setEnabled(added)
 
             btn = QtWidgets.QPushButton("Add")
             btn.setFixedWidth(50)
-            btn.clicked.connect(lambda checked=False, n=node, vc=version_combo, c=combo: self._on_add_clicked(n, vc, c))
+            btn.setEnabled(not added)
+
+            reimport_btn.clicked.connect(lambda checked=False, n=node, vc=version_combo, rb=reimport_btn, ab=btn, mc=combo: self._on_reimport_clicked(n, vc, rb, ab, mc))
+            btn.clicked.connect(lambda checked=False, n=node, vc=version_combo, c=combo, ab=btn, rb=reimport_btn: self._on_add_clicked(n, vc, c, ab, rb))
 
             action_layout.addWidget(combo)
             action_layout.addWidget(reimport_btn)
@@ -193,7 +232,14 @@ class SceneResourceWindow(QtWidgets.QDialog):
 
         self._status_label.setText(f"Found {len(ftrack_nodes)} node(s)")
 
-    def _on_reimport_clicked(self, node: str, version_combo: QtWidgets.QComboBox):
+    def _on_reimport_clicked(
+        self,
+        node: str,
+        version_combo: QtWidgets.QComboBox,
+        reimport_btn: QtWidgets.QPushButton,
+        add_btn: QtWidgets.QPushButton,
+        method_combo: QtWidgets.QComboBox,
+    ):
         """Replace the existing reference with the version selected in the dropdown."""
         version_data = version_combo.currentData()
         if not version_data or not version_data.get("component_id"):
@@ -203,7 +249,7 @@ class SceneResourceWindow(QtWidgets.QDialog):
         component_id = version_data["component_id"]
         version_id = version_data["version_id"]
 
-        new_path = get_component_path_by_id(component_id)
+        new_path = self._resolve_any_disk_path(component_id)
         if not new_path:
             self._status_label.setText("Transfer component first.")
             print("[Reimport] Transfer component first")
@@ -240,6 +286,8 @@ class SceneResourceWindow(QtWidgets.QDialog):
         node: str,
         version_combo: QtWidgets.QComboBox,
         method_combo: QtWidgets.QComboBox,
+        add_btn: QtWidgets.QPushButton,
+        reimport_btn: QtWidgets.QPushButton,
     ):
         """Add the component for the selected version and update the reference node."""
         version_data = version_combo.currentData()
@@ -249,7 +297,8 @@ class SceneResourceWindow(QtWidgets.QDialog):
 
         component_id = version_data["component_id"]
         version_id = version_data["version_id"]
-        path = get_component_path_by_id(component_id)
+
+        path = self._resolve_any_disk_path(component_id)
 
         if not path:
             self._status_label.setText("Transfer component first.")
@@ -273,9 +322,50 @@ class SceneResourceWindow(QtWidgets.QDialog):
         except Exception as exc:
             _log.error("Failed to update reference node '%s': %s", node, exc)
 
+        # Store the method used and lock the combo
+        self._set_node_string_attr(node, 'ftrack_add_method', method)
+        method_combo.setEnabled(False)
+
+        # Mark as added and flip button states
+        self._set_added_to_scene(node, True)
+        add_btn.setEnabled(False)
+        reimport_btn.setEnabled(True)
+
         self._status_label.setText(
             f"Added v{version_data['version']} via {method}"
         )
+
+    def _set_added_to_scene(self, node: str, value: bool):
+        """Set the added_to_scene flag on the ftrack node, creating the attr if needed."""
+        if not cmds.attributeQuery('added_to_scene', node=node, exists=True):
+            cmds.addAttr(node, longName='added_to_scene', attributeType='bool')
+        cmds.setAttr(f"{node}.added_to_scene", value)
+
+    def _set_node_string_attr(self, node: str, attr: str, value: str):
+        """Set a string attribute on a node, creating it if needed."""
+        if not cmds.attributeQuery(attr, node=node, exists=True):
+            cmds.addAttr(node, longName=attr, dataType='string')
+        cmds.setAttr(f"{node}.{attr}", value, type='string')
+
+    def _resolve_any_disk_path(self, component_id: str) -> str | None:
+        """Resolve filesystem path for a component from any available disk location."""
+        if not self._session or not component_id:
+            return None
+        try:
+            component = self._session.get("Component", component_id)
+            if not component:
+                return None
+            for comp_loc in component["component_locations"]:
+                location = comp_loc["location"]
+                try:
+                    path = resolve_component_path(self._session, component, location=location)
+                    if path:
+                        return path
+                except (ValueError, Exception):
+                    continue
+        except Exception as exc:
+            _log.error("Failed to resolve path for component %s: %s", component_id, exc)
+        return None
 
     def _get_node_display_data(self, node: str) -> tuple[str, str]:
         """Get display data for a node, including file extension."""
