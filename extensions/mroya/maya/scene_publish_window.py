@@ -1164,40 +1164,6 @@ class PublishWindow(QtWidgets.QDialog):
             result = publisher.execute(job)
             results.append((asset_name, result))
 
-        # --- Time logging ---
-        time_line = ""
-        try:
-            from ftrack_inout.common.timelog import (
-                record_publish, create_ftrack_timelog, format_duration,
-            )
-
-            successful_task_ids = [
-                ad["task_id"]
-                for ad, (_, r) in zip(self._publish_data, results)
-                if r.success and ad.get("task_id")
-            ]
-
-            if successful_task_ids:
-                per_task_secs, total_time_str = record_publish(
-                    task_count=len(successful_task_ids)
-                )
-
-                for tid in successful_task_ids:
-                    create_ftrack_timelog(
-                        session, tid, per_task_secs,
-                        comment="Auto-logged on publish",
-                    )
-
-                time_line = f"\n\nTime logged: {total_time_str}"
-                if len(successful_task_ids) > 1:
-                    time_line += (
-                        f" (split across {len(successful_task_ids)} tasks:"
-                        f" {format_duration(per_task_secs)} each)"
-                    )
-                print(f"[Publish] {time_line.strip()}")
-        except Exception as exc:
-            _log.warning("Time logging failed: %s", exc)
-
         # Show results
         success_count = sum(1 for _, r in results if r.success)
         fail_count = len(results) - success_count
@@ -1214,16 +1180,145 @@ class PublishWindow(QtWidgets.QDialog):
         print(f"\n[Publish] {success_count} succeeded, {fail_count} failed")
         print(summary)
 
+        # --- Time logging ---
+        # Calculate time but don't log yet — let the user edit in the dialog.
+        total_secs = 0.0
+        successful_task_ids = []
+        timelog_available = False
+        try:
+            from ftrack_inout.common.timelog import (
+                record_publish, create_ftrack_timelog, format_duration,
+                parse_duration,
+            )
+            timelog_available = True
+
+            successful_task_ids = [
+                ad["task_id"]
+                for ad, (_, r) in zip(self._publish_data, results)
+                if r.success and ad.get("task_id")
+            ]
+
+            if successful_task_ids:
+                _per_task, _total_str = record_publish(
+                    task_count=len(successful_task_ids)
+                )
+                # _per_task * task_count = total seconds
+                total_secs = _per_task * len(successful_task_ids)
+        except Exception as exc:
+            _log.warning("Time calculation failed: %s", exc)
+
         if fail_count > 0:
+            # Partial failure — show warning with time info (no editing)
+            time_note = ""
+            if timelog_available and successful_task_ids and total_secs > 0:
+                time_note = f"\n\nTime logged: {format_duration(total_secs)}"
+                per_task_secs = total_secs / len(successful_task_ids)
+                for tid in successful_task_ids:
+                    create_ftrack_timelog(
+                        session, tid, per_task_secs,
+                        comment="Auto-logged on publish",
+                    )
             QtWidgets.QMessageBox.warning(
                 self, "Publish Results",
-                f"{success_count} succeeded, {fail_count} failed:\n\n{summary}{time_line}"
+                f"{success_count} succeeded, {fail_count} failed:\n\n{summary}{time_note}"
             )
         else:
-            QtWidgets.QMessageBox.information(
-                self, "Publish Complete",
-                f"All {success_count} asset(s) published successfully.\n\n{summary}{time_line}"
-            )
+            # Full success — show dialog with editable time field
+            if timelog_available and successful_task_ids and total_secs > 0:
+                edited_secs = _show_publish_result_dialog(
+                    self, summary, total_secs, len(successful_task_ids),
+                )
+                if edited_secs is not None and edited_secs > 0:
+                    per_task_secs = edited_secs / len(successful_task_ids)
+                    for tid in successful_task_ids:
+                        create_ftrack_timelog(
+                            session, tid, per_task_secs,
+                            comment="Auto-logged on publish",
+                        )
+                    print(f"[Publish] Time logged: {format_duration(edited_secs)}")
+            else:
+                QtWidgets.QMessageBox.information(
+                    self, "Publish Complete",
+                    f"All {success_count} asset(s) published successfully.\n\n{summary}"
+                )
+
+
+def _show_publish_result_dialog(
+    parent, summary: str, total_secs: float, task_count: int,
+) -> float | None:
+    """Show publish-success dialog with an editable time field.
+
+    Args:
+        parent: Parent widget.
+        summary: Multi-line publish summary text.
+        total_secs: Calculated total seconds to pre-fill.
+        task_count: Number of tasks (for the "split across" note).
+
+    Returns:
+        The (possibly edited) total seconds, or None if the user cancelled.
+    """
+    from ftrack_inout.common.timelog import format_duration, parse_duration
+
+    dlg = QtWidgets.QDialog(parent)
+    dlg.setWindowTitle("Publish Complete")
+    dlg.setMinimumWidth(380)
+
+    layout = QtWidgets.QVBoxLayout(dlg)
+
+    # Summary label
+    summary_label = QtWidgets.QLabel(
+        f"All assets published successfully.\n\n{summary}"
+    )
+    summary_label.setWordWrap(True)
+    layout.addWidget(summary_label)
+
+    # Separator
+    line = QtWidgets.QFrame()
+    line.setFrameShape(QtWidgets.QFrame.HLine)
+    line.setFrameShadow(QtWidgets.QFrame.Sunken)
+    layout.addWidget(line)
+
+    # Time row
+    time_layout = QtWidgets.QHBoxLayout()
+    time_label = QtWidgets.QLabel("Time spent:")
+    time_edit = QtWidgets.QLineEdit(format_duration(total_secs))
+    time_edit.setToolTip(
+        "Edit the time to log. Examples: 1h 30m, 45m, 2h"
+    )
+    time_edit.setMaximumWidth(120)
+    time_layout.addWidget(time_label)
+    time_layout.addWidget(time_edit)
+    time_layout.addStretch()
+    layout.addLayout(time_layout)
+
+    if task_count > 1:
+        split_label = QtWidgets.QLabel(
+            f"(will be split equally across {task_count} tasks)"
+        )
+        split_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(split_label)
+
+    layout.addSpacing(8)
+
+    # Buttons
+    btn_layout = QtWidgets.QHBoxLayout()
+    btn_layout.addStretch()
+    ok_btn = QtWidgets.QPushButton("OK")
+    ok_btn.setDefault(True)
+    ok_btn.clicked.connect(dlg.accept)
+    btn_layout.addWidget(ok_btn)
+    layout.addLayout(btn_layout)
+
+    if dlg.exec_() == QtWidgets.QDialog.Accepted:
+        text = time_edit.text().strip()
+        edited = parse_duration(text)
+        if edited is not None and edited > 0:
+            return edited
+        # If parsing failed, fall back to original
+        return total_secs
+
+    # Dialog closed / cancelled — still log the original time
+    return total_secs
 
 
 def open_publish_window():
