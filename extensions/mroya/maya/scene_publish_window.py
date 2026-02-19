@@ -1042,6 +1042,19 @@ class PublishWindow(QtWidgets.QDialog):
 
         session = _get_ftrack_session()
 
+        # Record publish time once (before the loop) so all tasks in the
+        # batch share the same delta.  Publisher auto_timelog is disabled;
+        # Maya creates/edits timelogs via the result dialog instead.
+        _timelog_total_secs = 0.0
+        _timelog_per_task = 0.0
+        try:
+            from ftrack_inout.common.timelog import record_publish
+            task_count = len(self._publish_data) or 1
+            _timelog_per_task, _total_str = record_publish(task_count=task_count)
+            _timelog_total_secs = _timelog_per_task * task_count
+        except Exception as exc:
+            _log.warning("Time calculation failed: %s", exc)
+
         results = []
         for asset_data in self._publish_data:
             asset_name = asset_data["asset_name"]
@@ -1160,7 +1173,7 @@ class PublishWindow(QtWidgets.QDialog):
             job = JobBuilder.from_dict(job_data)
 
             # Execute publish
-            publisher = Publisher(session=session, dry_run=(session is None))
+            publisher = Publisher(session=session, dry_run=(session is None), auto_timelog=False)
             result = publisher.execute(job)
             results.append((asset_name, result))
 
@@ -1180,62 +1193,51 @@ class PublishWindow(QtWidgets.QDialog):
         print(f"\n[Publish] {success_count} succeeded, {fail_count} failed")
         print(summary)
 
-        # --- Time logging ---
-        # Calculate time but don't log yet — let the user edit in the dialog.
-        total_secs = 0.0
-        successful_task_ids = []
-        timelog_available = False
-        try:
-            from ftrack_inout.common.timelog import (
-                record_publish, create_ftrack_timelog, format_duration,
-                parse_duration,
-            )
-            timelog_available = True
-
-            successful_task_ids = [
-                ad["task_id"]
-                for ad, (_, r) in zip(self._publish_data, results)
-                if r.success and ad.get("task_id")
-            ]
-
-            if successful_task_ids:
-                _per_task, _total_str = record_publish(
-                    task_count=len(successful_task_ids)
-                )
-                # _per_task * task_count = total seconds
-                total_secs = _per_task * len(successful_task_ids)
-        except Exception as exc:
-            _log.warning("Time calculation failed: %s", exc)
+        # --- Time logging (Maya handles timelogs via editable dialog) ---
+        successful_task_ids = [
+            ad["task_id"]
+            for ad, (_, r) in zip(self._publish_data, results)
+            if r.success and ad.get("task_id")
+        ]
 
         if fail_count > 0:
-            # Partial failure — show warning with time info (no editing)
+            # Partial failure — create timelogs for successful tasks, show warning
             time_note = ""
-            if timelog_available and successful_task_ids and total_secs > 0:
-                time_note = f"\n\nTime logged: {format_duration(total_secs)}"
-                per_task_secs = total_secs / len(successful_task_ids)
-                for tid in successful_task_ids:
-                    create_ftrack_timelog(
-                        session, tid, per_task_secs,
-                        comment="Auto-logged on publish",
+            if _timelog_total_secs > 0 and successful_task_ids:
+                try:
+                    from ftrack_inout.common.timelog import (
+                        create_ftrack_timelog, format_duration,
                     )
+                    per_task = _timelog_total_secs / len(successful_task_ids)
+                    for tid in successful_task_ids:
+                        create_ftrack_timelog(session, tid, per_task,
+                                             comment="Auto-logged on publish")
+                    time_note = f"\n\nTime logged: {format_duration(_timelog_total_secs)}"
+                except Exception as exc:
+                    _log.warning("Time logging failed: %s", exc)
             QtWidgets.QMessageBox.warning(
                 self, "Publish Results",
                 f"{success_count} succeeded, {fail_count} failed:\n\n{summary}{time_note}"
             )
         else:
             # Full success — show dialog with editable time field
-            if timelog_available and successful_task_ids and total_secs > 0:
+            if _timelog_total_secs > 0 and successful_task_ids:
                 edited_secs = _show_publish_result_dialog(
-                    self, summary, total_secs, len(successful_task_ids),
+                    self, summary, _timelog_total_secs, len(successful_task_ids),
                 )
-                if edited_secs is not None and edited_secs > 0:
-                    per_task_secs = edited_secs / len(successful_task_ids)
+                # Create timelogs with the (possibly edited) duration
+                final_secs = edited_secs if (edited_secs and edited_secs > 0) else _timelog_total_secs
+                try:
+                    from ftrack_inout.common.timelog import (
+                        create_ftrack_timelog, format_duration,
+                    )
+                    per_task = final_secs / len(successful_task_ids)
                     for tid in successful_task_ids:
-                        create_ftrack_timelog(
-                            session, tid, per_task_secs,
-                            comment="Auto-logged on publish",
-                        )
-                    print(f"[Publish] Time logged: {format_duration(edited_secs)}")
+                        create_ftrack_timelog(session, tid, per_task,
+                                             comment="Auto-logged on publish")
+                    print(f"[Publish] Time logged: {format_duration(final_secs)}")
+                except Exception as exc:
+                    _log.warning("Time logging failed: %s", exc)
             else:
                 QtWidgets.QMessageBox.information(
                     self, "Publish Complete",
