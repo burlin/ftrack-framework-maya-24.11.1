@@ -1011,6 +1011,12 @@ class PublishWindow(QtWidgets.QDialog):
         tmp_dir.mkdir(exist_ok=True)
 
         try:
+            from .metadata import collect_component_metadata
+        except ImportError:
+            from metadata import collect_component_metadata
+        component_metadata = collect_component_metadata()
+
+        try:
             from ftrack_inout.publisher.core import JobBuilder, Publisher, PublishResult
         except ImportError as exc:
             QtWidgets.QMessageBox.warning(
@@ -1093,6 +1099,7 @@ class PublishWindow(QtWidgets.QDialog):
                     "name": comp_name_no_ext,
                     "file_path": file_path,
                     "component_type": "file",
+                    "metadata": component_metadata,
                 })
 
             # Clean up temp baked cameras
@@ -1115,6 +1122,7 @@ class PublishWindow(QtWidgets.QDialog):
                     "name": "playblast",
                     "file_path": playblast_path,
                     "component_type": "playblast",
+                    "metadata": component_metadata,
                 })
 
             # Add mandatory snapshot component
@@ -1130,6 +1138,7 @@ class PublishWindow(QtWidgets.QDialog):
                     "name": "snapshot",
                     "file_path": snap_file,
                     "component_type": "file",
+                    "metadata": component_metadata,
                 })
                 print(f"[Publish] Snapshot saved: {snap_file}")
             except Exception as exc:
@@ -1155,6 +1164,40 @@ class PublishWindow(QtWidgets.QDialog):
             result = publisher.execute(job)
             results.append((asset_name, result))
 
+        # --- Time logging ---
+        time_line = ""
+        try:
+            from ftrack_inout.common.timelog import (
+                record_publish, create_ftrack_timelog, format_duration,
+            )
+
+            successful_task_ids = [
+                ad["task_id"]
+                for ad, (_, r) in zip(self._publish_data, results)
+                if r.success and ad.get("task_id")
+            ]
+
+            if successful_task_ids:
+                per_task_secs, total_time_str = record_publish(
+                    task_count=len(successful_task_ids)
+                )
+
+                for tid in successful_task_ids:
+                    create_ftrack_timelog(
+                        session, tid, per_task_secs,
+                        comment="Auto-logged on publish",
+                    )
+
+                time_line = f"\n\nTime logged: {total_time_str}"
+                if len(successful_task_ids) > 1:
+                    time_line += (
+                        f" (split across {len(successful_task_ids)} tasks:"
+                        f" {format_duration(per_task_secs)} each)"
+                    )
+                print(f"[Publish] {time_line.strip()}")
+        except Exception as exc:
+            _log.warning("Time logging failed: %s", exc)
+
         # Show results
         success_count = sum(1 for _, r in results if r.success)
         fail_count = len(results) - success_count
@@ -1174,12 +1217,12 @@ class PublishWindow(QtWidgets.QDialog):
         if fail_count > 0:
             QtWidgets.QMessageBox.warning(
                 self, "Publish Results",
-                f"{success_count} succeeded, {fail_count} failed:\n\n{summary}"
+                f"{success_count} succeeded, {fail_count} failed:\n\n{summary}{time_line}"
             )
         else:
             QtWidgets.QMessageBox.information(
                 self, "Publish Complete",
-                f"All {success_count} asset(s) published successfully.\n\n{summary}"
+                f"All {success_count} asset(s) published successfully.\n\n{summary}{time_line}"
             )
 
 
