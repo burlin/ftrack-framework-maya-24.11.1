@@ -154,7 +154,7 @@ def launch_task_browser(*_args, **_kwargs) -> None:
     try:
         if _browser_widget is None or not _browser_widget.isVisible():
             print("[mroya_maya_taskhub] Creating FtrackBrowser widget...")
-            _browser_widget = FtrackBrowser()
+            _browser_widget = FtrackBrowser(dcc="maya")
             main_window = _get_maya_main_window()
             if main_window is not None:
                 _browser_widget.setParent(main_window)
