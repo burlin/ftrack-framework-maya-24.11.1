@@ -41,5 +41,8 @@ def create_publish_node() -> str:
     cmds.addAttr(node, longName="frame_end", attributeType="long")
     cmds.setAttr(f"{node}.frame_end", frame_end)
 
+    cmds.addAttr(node, longName="bone_camera_export", attributeType="bool")
+    cmds.setAttr(f"{node}.bone_camera_export", False)
+
     _log.info("Created publish node '%s' with task_id='%s'", node, task_id)
     return node

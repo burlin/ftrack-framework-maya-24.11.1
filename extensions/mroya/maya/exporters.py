@@ -27,13 +27,21 @@ def _strip_ext(file_path: str) -> str:
     return str(p.parent / p.stem)
 
 
-def export_fbx(objects: list[str], file_path: str) -> str:
-    """Export selected objects as FBX."""
+def export_fbx(objects: list[str], file_path: str, ascii: bool = True) -> str:
+    """Export selected objects as FBX.
+
+    Args:
+        objects: Maya objects to export.
+        file_path: Destination path.
+        ascii: When True (default) write ASCII FBX; when False write binary FBX.
+    """
     _select_objects(objects)
 
     # Ensure FBX plugin is loaded
     if not cmds.pluginInfo("fbxmaya", query=True, loaded=True):
         cmds.loadPlugin("fbxmaya")
+
+    mel.eval(f'FBXExportInAscii -v {"true" if ascii else "false"}')
 
     cmds.file(
         _strip_ext(file_path),
@@ -41,7 +49,7 @@ def export_fbx(objects: list[str], file_path: str) -> str:
         type="FBX export",
         exportSelected=True,
     )
-    _log.info("Exported FBX: %s", file_path)
+    _log.info("Exported FBX (ascii=%s): %s", ascii, file_path)
     return file_path
 
 
@@ -144,12 +152,18 @@ def save_snapshot(file_path: str) -> str:
     return file_path
 
 
-def export_component(objects: list[str], file_path: str) -> str:
+def export_component(
+    objects: list[str],
+    file_path: str,
+    options: dict | None = None,
+) -> str:
     """Export objects using the appropriate exporter based on file extension.
 
     Args:
         objects: List of Maya object names to export.
         file_path: Destination file path (extension determines format).
+        options: Format-specific export options dict (e.g. ``{"ascii": True}``
+                 for FBX).
 
     Returns:
         The file path of the exported file.
@@ -164,4 +178,7 @@ def export_component(objects: list[str], file_path: str) -> str:
             f"Unsupported export format: '.{ext}'. "
             f"Supported: {', '.join(sorted(_EXPORTERS))}"
         )
+    opts = options or {}
+    if ext == "fbx":
+        return exporter(objects, file_path, ascii=opts.get("ascii", True))
     return exporter(objects, file_path)

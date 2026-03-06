@@ -440,6 +440,28 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         cam_row.addWidget(self._camera_combo)
         layout.addLayout(cam_row)
 
+        # --- Bone Camera Export ---
+        bone_row = QtWidgets.QHBoxLayout()
+        self._bone_camera_cb = QtWidgets.QCheckBox("Export bone camera system")
+        self._bone_camera_cb.setToolTip(
+            "Creates a root + camera joint hierarchy with a 1×1×1 cm proxy mesh,\n"
+            "bakes the camera animation onto the joint, and exports as\n"
+            "[camera]_baked_to_bone.fbx alongside the other components."
+        )
+        bone_export = False
+        if MAYA_AVAILABLE and cmds.attributeQuery("bone_camera_export", node=node, exists=True):
+            try:
+                bone_export = bool(cmds.getAttr(f"{node}.bone_camera_export"))
+            except Exception:
+                pass
+        self._bone_camera_cb.setChecked(bone_export)
+        # Only meaningful when a camera is selected
+        self._bone_camera_cb.setEnabled(bool(current_cam))
+        self._bone_camera_cb.stateChanged.connect(self._on_bone_camera_changed)
+        bone_row.addWidget(self._bone_camera_cb)
+        bone_row.addStretch(1)
+        layout.addLayout(bone_row)
+
         # --- Close ---
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch(1)
@@ -503,6 +525,13 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             row_layout.addWidget(QtWidgets.QLabel(comp_name))
             row_layout.addStretch(1)
 
+            opts_btn = QtWidgets.QPushButton("Options")
+            opts_btn.setFixedWidth(60)
+            opts_btn.clicked.connect(
+                lambda checked=False, c=comp_name: self._on_component_options(c)
+            )
+            row_layout.addWidget(opts_btn)
+
             sel_btn = QtWidgets.QPushButton("Select Objects")
             sel_btn.clicked.connect(
                 lambda checked=False, c=comp_name: self._on_select_objects(c)
@@ -531,6 +560,12 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         print(f"[Publisher Setup] Deleted component '{comp_name}' from {self._node}")
         self._refresh_components_list()
 
+    def _on_component_options(self, comp_name: str):
+        """Open the options window for a component."""
+        window = ComponentOptionsWindow(self._node, comp_name, parent=self)
+        window.show()
+        window.raise_()
+
     def _on_frame_range_changed(self):
         """Save the current frame range spinbox values to the node."""
         if not MAYA_AVAILABLE:
@@ -558,6 +593,16 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             cmds.addAttr(self._node, longName="playblast_camera", dataType="string")
         value = "" if text == "No Playblast" else text
         cmds.setAttr(f"{self._node}.playblast_camera", value, type="string")
+        # Bone camera export only makes sense when a camera is selected
+        self._bone_camera_cb.setEnabled(bool(value))
+
+    def _on_bone_camera_changed(self, state: int):
+        """Save the bone camera export flag to the node attribute."""
+        if not MAYA_AVAILABLE:
+            return
+        if not cmds.attributeQuery("bone_camera_export", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="bone_camera_export", attributeType="bool")
+        cmds.setAttr(f"{self._node}.bone_camera_export", bool(state))
 
     # ------------------------------------------------------------------
     def _on_select_objects(self, comp_name: str):
@@ -910,6 +955,80 @@ class ComponentObjectsWindow(QtWidgets.QDialog):
         self._refresh_list()
 
 
+class ComponentOptionsWindow(QtWidgets.QDialog):
+    """Small options dialog for a single component, keyed on its file extension."""
+
+    def __init__(self, node: str, comp_name: str, parent=None):
+        super().__init__(parent)
+        self._node = node
+        self._comp_name = comp_name
+        self._ext = Path(comp_name).suffix.lstrip(".").lower()
+
+        self.setWindowTitle(f"Options — {comp_name}")
+        self.setMinimumWidth(280)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        opts = self._read_options()
+        self._widgets: dict = {}
+
+        if self._ext == "fbx":
+            cb = QtWidgets.QCheckBox("ASCII export")
+            cb.setChecked(bool(opts.get("ascii", True)))
+            layout.addWidget(cb)
+            self._widgets["ascii"] = cb
+        else:
+            layout.addWidget(QtWidgets.QLabel("No options available for this format."))
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addStretch(1)
+        save_btn = QtWidgets.QPushButton("Save")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._on_save)
+        btn_layout.addWidget(save_btn)
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.close)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def _read_all_options(self) -> dict:
+        if not MAYA_AVAILABLE:
+            return {}
+        if not cmds.attributeQuery("component_options", node=self._node, exists=True):
+            return {}
+        raw = cmds.getAttr(f"{self._node}.component_options") or ""
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+    def _read_options(self) -> dict:
+        return self._read_all_options().get(self._comp_name, {})
+
+    def _on_save(self):
+        if not MAYA_AVAILABLE:
+            self.close()
+            return
+        all_opts = self._read_all_options()
+        comp_opts = {
+            key: widget.isChecked()
+            for key, widget in self._widgets.items()
+            if isinstance(widget, QtWidgets.QCheckBox)
+        }
+        all_opts[self._comp_name] = comp_opts
+        if not cmds.attributeQuery("component_options", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="component_options", dataType="string")
+        cmds.setAttr(
+            f"{self._node}.component_options", json.dumps(all_opts), type="string"
+        )
+        self.close()
+
+
 def open_scene_publish_window():
     """Open the Scene Publish Inspector window.
 
@@ -1248,10 +1367,6 @@ class PublishWindow(QtWidgets.QDialog):
                     except Exception:
                         pass
 
-            # Build tree
-            asset_item = QtWidgets.QTreeWidgetItem([asset_name, f"{frame_start} – {frame_end}"])
-            asset_item.setExpanded(True)
-
             playblast_camera = ""
             if cmds.attributeQuery("playblast_camera", node=node, exists=True):
                 playblast_camera = cmds.getAttr(f"{node}.playblast_camera") or ""
@@ -1271,6 +1386,17 @@ class PublishWindow(QtWidgets.QDialog):
                 except Exception:
                     pass
 
+            # Build tree
+            asset_item = QtWidgets.QTreeWidgetItem([asset_name, f"{frame_start} – {frame_end}"])
+            asset_item.setExpanded(True)
+
+            bone_camera_export = False
+            if cmds.attributeQuery("bone_camera_export", node=node, exists=True):
+                try:
+                    bone_camera_export = bool(cmds.getAttr(f"{node}.bone_camera_export"))
+                except Exception:
+                    pass
+
             asset_data = {
                 "node": node,
                 "task_id": task_id,
@@ -1280,6 +1406,7 @@ class PublishWindow(QtWidgets.QDialog):
                 "playblast_camera": playblast_camera,
                 "frame_start": frame_start,
                 "frame_end": frame_end,
+                "bone_camera_export": bone_camera_export,
                 "components": [],
             }
 
@@ -1292,6 +1419,14 @@ class PublishWindow(QtWidgets.QDialog):
                     "component": comp_name,
                     "objects": objects,
                 })
+
+            # Show bone camera component in tree when enabled
+            if bone_camera_export and playblast_camera:
+                cam_short = playblast_camera.rsplit("|", 1)[-1]
+                bone_item = QtWidgets.QTreeWidgetItem(
+                    [f"{cam_short}_baked_to_bone.fbx", "(bone camera — auto-generated)"]
+                )
+                asset_item.addChild(bone_item)
 
             self._tree.addTopLevelItem(asset_item)
             self._publish_data.append(asset_data)
@@ -1383,6 +1518,17 @@ class PublishWindow(QtWidgets.QDialog):
                     _log.error("Playblast creation failed for %s: %s", asset_name, exc)
                     print(f"[Publish] Playblast FAILED for '{asset_name}': {exc}")
 
+            # Read per-component export options stored on the node
+            comp_options: dict = {}
+            node = asset_data["node"]
+            if cmds.attributeQuery("component_options", node=node, exists=True):
+                raw_opts = cmds.getAttr(f"{node}.component_options") or ""
+                if raw_opts:
+                    try:
+                        comp_options = json.loads(raw_opts)
+                    except Exception:
+                        pass
+
             # Export component files and build component list
             comp_list = []
             export_failed = False
@@ -1420,7 +1566,10 @@ class PublishWindow(QtWidgets.QDialog):
                             print(f"[Publish] Camera bake FAILED for '{obj}': {exc}")
 
                 try:
-                    export_component(export_objects, file_path)
+                    export_component(
+                        export_objects, file_path,
+                        options=comp_options.get(comp_name, {}),
+                    )
                 except Exception as exc:
                     _log.error("Export failed for %s: %s", comp_name, exc)
                     print(f"[Publish] Export FAILED for '{comp_name}': {exc}")
@@ -1449,6 +1598,50 @@ class PublishWindow(QtWidgets.QDialog):
                     success=False, error_message="All exports failed"
                 )))
                 continue
+
+            # Bone camera export (optional, enabled per asset in Setup window)
+            bone_camera_export = asset_data.get("bone_camera_export", False)
+            if camera and bone_camera_export:
+                try:
+                    try:
+                        from .bone_camera import (
+                            create_bone_camera_rig, bake_bone_camera_rig,
+                            export_bone_camera, cleanup_bone_camera_rig,
+                        )
+                    except ImportError:
+                        from bone_camera import (
+                            create_bone_camera_rig, bake_bone_camera_rig,
+                            export_bone_camera, cleanup_bone_camera_rig,
+                        )
+                    cam_short = camera.rsplit("|", 1)[-1]
+                    bone_cam_file = str(tmp_dir / f"{cam_short}_baked_to_bone.fbx")
+                    root_jnt = None
+                    box_mesh = None
+                    try:
+                        root_jnt, cam_jnt, box_mesh = create_bone_camera_rig(camera)
+                        bake_bone_camera_rig(
+                            cam_jnt, camera,
+                            start_frame=frame_start, end_frame=frame_end,
+                        )
+                        export_bone_camera(root_jnt, box_mesh, bone_cam_file)
+                        comp_list.append({
+                            "name": f"{cam_short}_baked_to_bone",
+                            "file_path": bone_cam_file,
+                            "component_type": "file",
+                            "metadata": component_metadata,
+                        })
+                        print(f"[Publish] Bone camera exported: {bone_cam_file}")
+                    except Exception as exc:
+                        _log.error("Bone camera export failed: %s", exc)
+                        print(f"[Publish] Bone camera FAILED: {exc}")
+                    finally:
+                        if root_jnt and box_mesh:
+                            try:
+                                cleanup_bone_camera_rig(root_jnt, box_mesh)
+                            except Exception as exc:
+                                _log.warning("Bone camera cleanup failed: %s", exc)
+                except ImportError as exc:
+                    print(f"[Publish] bone_camera module not available: {exc}")
 
             # Add playblast component
             if playblast_path:
