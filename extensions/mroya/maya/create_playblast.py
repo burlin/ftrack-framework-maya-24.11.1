@@ -34,6 +34,8 @@ def create_playblast(
     camera: str,
     width: int = 1920,
     height: int = 1080,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
 ) -> str:
     """Create a playblast from the given camera.
 
@@ -41,6 +43,8 @@ def create_playblast(
         camera: Camera transform name to look through.
         width: Output width in pixels.
         height: Output height in pixels.
+        start_frame: First frame to render. Defaults to scene playback start.
+        end_frame: Last frame to render. Defaults to scene playback end.
 
     Returns:
         The file path of the created playblast movie.
@@ -63,9 +67,12 @@ def create_playblast(
         pre="currentFrame",
     )
 
+    st = start_frame if start_frame is not None else cmds.playbackOptions(q=True, min=True)
+    et = end_frame if end_frame is not None else cmds.playbackOptions(q=True, max=True)
+
     result_path = cmds.playblast(
-        st=cmds.playbackOptions(q=True, min=True),
-        et=cmds.playbackOptions(q=True, max=True),
+        st=st,
+        et=et,
         format="qt",
         filename=temp_file_path,
         width=width,

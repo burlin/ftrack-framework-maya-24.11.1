@@ -632,28 +632,12 @@ def install_menu() -> None:
             command=lambda *_a, **_k: open_scene_inspector_callback(),
         )
 
-        # New publisher node creation
-        cmds.menuItem(
-            "MroyaPublisherCreate",
-            label="Create Publisher Node",
-            parent=menu,
-            command=lambda *_a, **_k: create_publisher_node_new(),
-        )
-
-        # Scene Publish Inspector
+        # Scene Publish Inspector (includes Create Publisher Node and Publish)
         cmds.menuItem(
             "MroyaScenePublishInspector",
             label="Scene Publish Inspector",
             parent=menu,
             command=lambda *_a, **_k: open_scene_publish_inspector(),
-        )
-
-        # Publish
-        cmds.menuItem(
-            "MroyaPublish",
-            label="Publish",
-            parent=menu,
-            command=lambda *_a, **_k: open_publish_callback(),
         )
 
         # Old publisher node creation (to be removed later)
@@ -669,7 +653,8 @@ def install_menu() -> None:
 
         print(
             "[mroya_maya_taskhub] Menu installed under 'Mroya' -> "
-            "'Open Task Browser', 'Open User Tasks', 'Ftrack Input', 'Create Publisher Node'"
+            "'Open Task Browser', 'Open User Tasks', 'Ftrack Input', "
+            "'Scene Inspector', 'Scene Publish Inspector'"
         )
     except Exception as exc:
         print("[mroya_maya_taskhub] Failed to install menu:", exc)

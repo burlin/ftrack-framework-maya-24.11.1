@@ -31,5 +31,15 @@ def create_publish_node() -> str:
     cmds.addAttr(node, longName="asset_name", dataType="string")
     cmds.setAttr(f"{node}.asset_name", "Unnamed", type="string")
 
+    cmds.addAttr(node, longName="playblast_camera", dataType="string")
+    cmds.setAttr(f"{node}.playblast_camera", "", type="string")
+
+    frame_start = int(cmds.playbackOptions(query=True, minTime=True))
+    frame_end = int(cmds.playbackOptions(query=True, maxTime=True))
+    cmds.addAttr(node, longName="frame_start", attributeType="long")
+    cmds.setAttr(f"{node}.frame_start", frame_start)
+    cmds.addAttr(node, longName="frame_end", attributeType="long")
+    cmds.setAttr(f"{node}.frame_end", frame_end)
+
     _log.info("Created publish node '%s' with task_id='%s'", node, task_id)
     return node

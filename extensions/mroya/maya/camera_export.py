@@ -54,16 +54,22 @@ def _get_camera_shape(transform: str) -> str | None:
     return None
 
 
-def prepare_camera(camera_transform: str) -> str:
+def prepare_camera(
+    camera_transform: str,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+) -> str:
     """Duplicate *camera_transform*, bake animation, return the temp camera name.
 
     The duplicate is named ``{camera_transform}_PIPE`` and lives at world
     level.  All transform and camera-specific channels are baked across the
-    timeline range so the result is a clean, standalone camera ready for
+    given frame range so the result is a clean, standalone camera ready for
     export.
 
     Args:
         camera_transform: Name of the source camera transform node.
+        start_frame: First frame to bake. Defaults to scene playback start.
+        end_frame: Last frame to bake. Defaults to scene playback end.
 
     Returns:
         The name of the baked temp camera transform.
@@ -110,8 +116,8 @@ def prepare_camera(camera_transform: str) -> str:
     # ------------------------------------------------------------------
     # Bake
     # ------------------------------------------------------------------
-    start = cmds.playbackOptions(query=True, minTime=True)
-    end = cmds.playbackOptions(query=True, maxTime=True)
+    start = start_frame if start_frame is not None else cmds.playbackOptions(query=True, minTime=True)
+    end = end_frame if end_frame is not None else cmds.playbackOptions(query=True, maxTime=True)
 
     # Build list of attrs to bake
     bake_attrs = [f"{dup}.{a}" for a in _TRANSFORM_ATTRS]

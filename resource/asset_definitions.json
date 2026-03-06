@@ -18,6 +18,12 @@
       "type": "geo",
       "component_name": "geometry",
       "components": ["geometry.fbx", "geometry.obj"]
+    },
+    {
+      "name": "Rig",
+      "type": "rig",
+      "component_name": "rig",
+      "components": ["rig.fbx"]
     }
   ]
 }

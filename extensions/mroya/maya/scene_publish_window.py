@@ -87,6 +87,9 @@ class ScenePublishWindow(QtWidgets.QDialog):
         self._scan_btn = QtWidgets.QPushButton("Scan Scene")
         self._scan_btn.clicked.connect(self._on_scan_clicked)
         toolbar_layout.addWidget(self._scan_btn)
+        self._create_node_btn = QtWidgets.QPushButton("Create Publisher Node")
+        self._create_node_btn.clicked.connect(self._on_create_node_clicked)
+        toolbar_layout.addWidget(self._create_node_btn)
         toolbar_layout.addStretch(1)
         layout.addLayout(toolbar_layout)
 
@@ -102,7 +105,7 @@ class ScenePublishWindow(QtWidgets.QDialog):
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
-        self._results_table.setColumnWidth(3, 120)
+        self._results_table.setColumnWidth(3, 190)
 
         layout.addWidget(self._results_table)
 
@@ -111,6 +114,9 @@ class ScenePublishWindow(QtWidgets.QDialog):
         layout.addWidget(self._status_label)
 
         button_layout = QtWidgets.QHBoxLayout()
+        self._publish_action_btn = QtWidgets.QPushButton("Publish")
+        self._publish_action_btn.clicked.connect(self._on_publish_clicked)
+        button_layout.addWidget(self._publish_action_btn)
         button_layout.addStretch(1)
         self._close_btn = QtWidgets.QPushButton("Close")
         self._close_btn.clicked.connect(self.close)
@@ -171,13 +177,44 @@ class ScenePublishWindow(QtWidgets.QDialog):
             row_height = max(30, 24 * num_comps + 8) if comp_dict else 30
             self._results_table.setRowHeight(row, row_height)
 
+            actions_widget = QtWidgets.QWidget()
+            actions_layout = QtWidgets.QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            actions_layout.setSpacing(4)
             setup_btn = QtWidgets.QPushButton("Setup Publisher")
             setup_btn.clicked.connect(
                 lambda checked=False, n=node: self._on_setup_publisher(n)
             )
-            self._results_table.setCellWidget(row, 3, setup_btn)
+            delete_btn = QtWidgets.QPushButton("Delete")
+            delete_btn.clicked.connect(
+                lambda checked=False, n=node: self._on_delete_node(n)
+            )
+            actions_layout.addWidget(setup_btn)
+            actions_layout.addWidget(delete_btn)
+            self._results_table.setCellWidget(row, 3, actions_widget)
 
         self._status_label.setText(f"Found {len(publish_nodes)} publish node(s)")
+
+    def _on_create_node_clicked(self):
+        """Create a new ftrack publish node and refresh the scan."""
+        try:
+            try:
+                from .publish_node import create_publish_node
+            except ImportError:
+                from publish_node import create_publish_node
+            node = create_publish_node()
+            print(f"[Scene Publish Inspector] Created publish node: {node}")
+            self._on_scan_clicked()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Error", f"Failed to create publisher node:\n{exc}"
+            )
+
+    def _on_publish_clicked(self):
+        """Open the Publish window."""
+        window = PublishWindow(parent=self)
+        window.show()
+        window.raise_()
 
     def _on_comp_checkbox_changed(self, node: str, comp_name: str, state: int):
         """Update the ToPublish flag in the components dict on the node."""
@@ -198,6 +235,24 @@ class ScenePublishWindow(QtWidgets.QDialog):
         window = PublisherSetupWindow(node, parent=self)
         window.show()
         window.raise_()
+
+    def _on_delete_node(self, node: str):
+        """Ask for confirmation then delete the publish node from the Maya scene."""
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Publisher Node",
+            f"Are you sure you want to delete '{node}'?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            cmds.delete(node)
+            print(f"[Scene Publish Inspector] Deleted node: {node}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to delete '{node}':\n{exc}")
+        self._on_scan_clicked()
 
 
 def _load_asset_definitions() -> tuple[list[dict], list[str]]:
@@ -322,6 +377,69 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         add_comp_layout.addWidget(add_comp_btn)
         layout.addLayout(add_comp_layout)
 
+        # --- Frame Range ---
+        fr_row = QtWidgets.QHBoxLayout()
+        fr_row.addWidget(QtWidgets.QLabel("Frame Range:"))
+        self._frame_start_spin = QtWidgets.QSpinBox()
+        self._frame_start_spin.setRange(-99999, 99999)
+        self._frame_start_spin.setFixedWidth(70)
+        self._frame_end_spin = QtWidgets.QSpinBox()
+        self._frame_end_spin.setRange(-99999, 99999)
+        self._frame_end_spin.setFixedWidth(70)
+        # Restore from node, or default to scene playback range
+        if MAYA_AVAILABLE:
+            scene_start = int(cmds.playbackOptions(query=True, minTime=True))
+            scene_end = int(cmds.playbackOptions(query=True, maxTime=True))
+            fs = scene_start
+            fe = scene_end
+            if cmds.attributeQuery("frame_start", node=node, exists=True):
+                try:
+                    fs = int(cmds.getAttr(f"{node}.frame_start"))
+                except Exception:
+                    pass
+            if cmds.attributeQuery("frame_end", node=node, exists=True):
+                try:
+                    fe = int(cmds.getAttr(f"{node}.frame_end"))
+                except Exception:
+                    pass
+            self._frame_start_spin.setValue(fs)
+            self._frame_end_spin.setValue(fe)
+        self._frame_start_spin.valueChanged.connect(self._on_frame_range_changed)
+        self._frame_end_spin.valueChanged.connect(self._on_frame_range_changed)
+        fr_row.addWidget(self._frame_start_spin)
+        fr_row.addWidget(QtWidgets.QLabel("—"))
+        fr_row.addWidget(self._frame_end_spin)
+        from_scene_btn = QtWidgets.QPushButton("From Scene")
+        from_scene_btn.clicked.connect(self._on_frame_range_from_scene)
+        fr_row.addWidget(from_scene_btn)
+        fr_row.addStretch(1)
+        layout.addLayout(fr_row)
+
+        # --- Playblast Camera ---
+        cam_row = QtWidgets.QHBoxLayout()
+        cam_row.addWidget(QtWidgets.QLabel("Playblast Camera:"))
+        self._camera_combo = QtWidgets.QComboBox()
+        self._camera_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self._camera_combo.addItem("No Playblast")
+        if MAYA_AVAILABLE:
+            for shape in cmds.ls(type="camera") or []:
+                transforms = cmds.listRelatives(shape, parent=True, fullPath=False) or []
+                if transforms:
+                    self._camera_combo.addItem(transforms[0])
+        # Restore saved value
+        current_cam = ""
+        if MAYA_AVAILABLE and cmds.attributeQuery("playblast_camera", node=node, exists=True):
+            current_cam = cmds.getAttr(f"{node}.playblast_camera") or ""
+        if current_cam:
+            idx = self._camera_combo.findText(current_cam)
+            if idx >= 0:
+                self._camera_combo.setCurrentIndex(idx)
+        self._camera_combo.currentTextChanged.connect(self._on_camera_changed)
+        cam_row.addWidget(self._camera_combo)
+        layout.addLayout(cam_row)
+
         # --- Close ---
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch(1)
@@ -412,6 +530,34 @@ class PublisherSetupWindow(QtWidgets.QDialog):
 
         print(f"[Publisher Setup] Deleted component '{comp_name}' from {self._node}")
         self._refresh_components_list()
+
+    def _on_frame_range_changed(self):
+        """Save the current frame range spinbox values to the node."""
+        if not MAYA_AVAILABLE:
+            return
+        for attr, spin in (
+            ("frame_start", self._frame_start_spin),
+            ("frame_end", self._frame_end_spin),
+        ):
+            if not cmds.attributeQuery(attr, node=self._node, exists=True):
+                cmds.addAttr(self._node, longName=attr, attributeType="long")
+            cmds.setAttr(f"{self._node}.{attr}", spin.value())
+
+    def _on_frame_range_from_scene(self):
+        """Reset frame range spinboxes to the current scene playback range."""
+        if not MAYA_AVAILABLE:
+            return
+        self._frame_start_spin.setValue(int(cmds.playbackOptions(query=True, minTime=True)))
+        self._frame_end_spin.setValue(int(cmds.playbackOptions(query=True, maxTime=True)))
+
+    def _on_camera_changed(self, text: str):
+        """Save the selected playblast camera to the node attribute."""
+        if not MAYA_AVAILABLE:
+            return
+        if not cmds.attributeQuery("playblast_camera", node=self._node, exists=True):
+            cmds.addAttr(self._node, longName="playblast_camera", dataType="string")
+        value = "" if text == "No Playblast" else text
+        cmds.setAttr(f"{self._node}.playblast_camera", value, type="string")
 
     # ------------------------------------------------------------------
     def _on_select_objects(self, comp_name: str):
@@ -838,21 +984,6 @@ class PublishWindow(QtWidgets.QDialog):
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
-        # --- Playblast row ---
-        cam_layout = QtWidgets.QHBoxLayout()
-        self._playblast_cb = QtWidgets.QCheckBox("Publish Playblast")
-        self._playblast_cb.setChecked(True)
-        self._playblast_cb.stateChanged.connect(self._on_playblast_toggled)
-        cam_layout.addWidget(self._playblast_cb)
-        cam_layout.addWidget(QtWidgets.QLabel("Camera:"))
-        self._camera_combo = QtWidgets.QComboBox()
-        self._camera_combo.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
-        )
-        self._populate_cameras()
-        cam_layout.addWidget(self._camera_combo)
-        layout.addLayout(cam_layout)
-
         # --- Snapshot row ---
         snap_layout = QtWidgets.QHBoxLayout()
         snap_layout.addWidget(QtWidgets.QLabel("Snapshot format:"))
@@ -870,6 +1001,24 @@ class PublishWindow(QtWidgets.QDialog):
         self._tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         layout.addWidget(self._tree)
 
+        # --- Transfer to additional locations ---
+        loc_group = QtWidgets.QGroupBox("Transfer to additional locations")
+        loc_group_layout = QtWidgets.QVBoxLayout(loc_group)
+        loc_group_layout.setContentsMargins(8, 6, 8, 6)
+        loc_group_layout.setSpacing(4)
+        self._loc_status_label = QtWidgets.QLabel("Loading locations...")
+        self._loc_status_label.setStyleSheet("color: #888; font-size: 11px;")
+        loc_group_layout.addWidget(self._loc_status_label)
+        self._loc_checkboxes_widget = QtWidgets.QWidget()
+        self._loc_checkboxes_layout = QtWidgets.QVBoxLayout(self._loc_checkboxes_widget)
+        self._loc_checkboxes_layout.setContentsMargins(0, 0, 0, 0)
+        self._loc_checkboxes_layout.setSpacing(3)
+        loc_group_layout.addWidget(self._loc_checkboxes_widget)
+        layout.addWidget(loc_group)
+
+        # {location_id: QCheckBox}
+        self._location_checkboxes: dict = {}
+
         # --- Buttons ---
         btn_layout = QtWidgets.QHBoxLayout()
         self._publish_btn = QtWidgets.QPushButton("Publish")
@@ -883,23 +1032,167 @@ class PublishWindow(QtWidgets.QDialog):
 
         self._publish_data: list[dict] = []
         self._scan()
+        self._load_locations()
 
-    def _on_playblast_toggled(self, state):
-        """Enable/disable camera dropdown based on playblast checkbox."""
-        self._camera_combo.setEnabled(bool(state))
+    def _load_locations(self):
+        """Populate the additional locations checkboxes from the ftrack session.
 
-    def _populate_cameras(self):
-        """Populate the camera dropdown with scene cameras."""
-        self._camera_combo.clear()
-        if not MAYA_AVAILABLE:
+        Shows only locations relevant to the current user:
+        - Locations whose name contains the user surname (e.g. k.nalobin → nalobin)
+        - x.local and s3.studio.storage are always included
+        """
+        session = _get_ftrack_session()
+        if session is None:
+            self._loc_status_label.setText("No ftrack session — locations unavailable")
             return
         try:
-            from .create_playblast import get_scene_cameras
+            # Derive surname from api_user: "k.nalobin" → "nalobin"
+            api_user = session.api_user or ""
+            parts = api_user.split(".")
+            surname = parts[-1].lower() if len(parts) >= 2 else api_user.lower()
+
+            _ALWAYS_INCLUDE = {"x.local", "s3.studio.storage"}
+
+            locations = session.query("Location").all()
+
+            try:
+                default_loc = session.pick_location()
+                default_loc_id = default_loc["id"] if default_loc else None
+            except Exception:
+                default_loc_id = None
+
+            def _is_relevant(loc):
+                name = loc.get("name", "")
+                if loc["id"] == default_loc_id:
+                    return False
+                if name in _ALWAYS_INCLUDE:
+                    return True
+                # Match only locations whose name starts with "surname."
+                # (e.g. nalobin.local, nalobin.backup) — NOT k.nalobin.Local
+                if surname and name.lower().startswith(surname + "."):
+                    return True
+                return False
+
+            extra_locs = [l for l in locations if _is_relevant(l)]
+            extra_locs.sort(key=lambda l: l.get("name", ""))
+
+            self._loc_status_label.hide()
+
+            if not extra_locs:
+                self._loc_status_label.setText("No additional locations available")
+                self._loc_status_label.show()
+                return
+
+            for loc in extra_locs:
+                cb = QtWidgets.QCheckBox(loc["name"])
+                self._loc_checkboxes_layout.addWidget(cb)
+                self._location_checkboxes[loc["id"]] = cb
+
+        except Exception as exc:
+            self._loc_status_label.setText(f"Failed to load locations: {exc}")
+            self._loc_status_label.show()
+
+    def _queue_transfers(self, session, component_ids: list, target_location_ids: list) -> None:
+        """Create a ftrack Job and fire a mroya.transfer.request event for each target location."""
+        if not component_ids or not target_location_ids:
+            return
+
+        try:
+            from ftrack_api.event.base import Event  # type: ignore
         except ImportError:
-            from create_playblast import get_scene_cameras
-        cameras = get_scene_cameras()
-        for cam in cameras:
-            self._camera_combo.addItem(cam)
+            print("[Publish] ftrack_api not available — cannot queue transfers")
+            return
+
+        # Determine the actual source location by querying where the components landed.
+        # Using ComponentLocation is more reliable than pick_location() because
+        # create_component(location='auto') may pick a different location than
+        # pick_location() returns (e.g. if the highest-priority location is inaccessible).
+        from_location_id = None
+        try:
+            cl = session.query(
+                f"ComponentLocation where component_id is \"{component_ids[0]}\""
+            ).first()
+            if cl:
+                from_location_id = cl["location_id"]
+                print(f"[Publish] Source location resolved from ComponentLocation: {from_location_id}")
+        except Exception as exc:
+            print(f"[Publish] ComponentLocation query failed, falling back to pick_location: {exc}")
+
+        if not from_location_id:
+            try:
+                default_loc = session.pick_location()
+                from_location_id = default_loc["id"] if default_loc else None
+            except Exception as exc:
+                print(f"[Publish] Could not determine source location: {exc}")
+                return
+
+        if not from_location_id:
+            print("[Publish] No source location found — skipping transfers")
+            return
+
+        try:
+            import socket
+            current_hostname = socket.gethostname().lower()
+            api_user = session.api_user
+            user_entity = session.query(f"User where username is \"{api_user}\"").one()
+            user_id = user_entity["id"]
+        except Exception as exc:
+            print(f"[Publish] Could not resolve user: {exc}")
+            return
+
+        for loc_id in target_location_ids:
+            try:
+                loc_entity = session.get("Location", loc_id)
+                loc_name = loc_entity["name"] if loc_entity else loc_id
+
+                job = session.create("Job", {
+                    "user_id": user_id,
+                    "status": "running",
+                    "data": json.dumps({
+                        "tag": "mroya_transfer",
+                        "description": (
+                            f"Transfer components to {loc_name} "
+                            "(initiated from Scene Publish Inspector)"
+                        ),
+                        "from_location_id": from_location_id,
+                        "to_location_id": loc_id,
+                        "to_location_name": loc_name,
+                    }),
+                })
+                session.commit()
+                job_id = job["id"]
+
+                payload = {
+                    "job_id": job_id,
+                    "user_id": user_id,
+                    "from_location_id": from_location_id,
+                    "to_location_id": loc_id,
+                    "selection": [
+                        {"entityType": "Component", "entityId": cid}
+                        for cid in component_ids
+                    ],
+                    "ignore_component_not_in_location": False,
+                    "ignore_location_errors": False,
+                }
+
+                try:
+                    session.event_hub.connect()
+                except Exception:
+                    pass
+
+                event = Event(
+                    topic="mroya.transfer.request",
+                    data=payload,
+                    source={
+                        "hostname": current_hostname,
+                        "user": {"username": api_user},
+                    },
+                )
+                session.event_hub.publish(event, on_error="ignore")
+                print(f"[Publish] Transfer job queued → '{loc_name}' (job {job_id})")
+
+            except Exception as exc:
+                print(f"[Publish] Failed to queue transfer to {loc_id}: {exc}")
 
     def _scan(self):
         """Scan scene for publish nodes with components marked for publish."""
@@ -956,8 +1249,27 @@ class PublishWindow(QtWidgets.QDialog):
                         pass
 
             # Build tree
-            asset_item = QtWidgets.QTreeWidgetItem([asset_name, ""])
+            asset_item = QtWidgets.QTreeWidgetItem([asset_name, f"{frame_start} – {frame_end}"])
             asset_item.setExpanded(True)
+
+            playblast_camera = ""
+            if cmds.attributeQuery("playblast_camera", node=node, exists=True):
+                playblast_camera = cmds.getAttr(f"{node}.playblast_camera") or ""
+
+            scene_start = int(cmds.playbackOptions(query=True, minTime=True))
+            scene_end = int(cmds.playbackOptions(query=True, maxTime=True))
+            frame_start = scene_start
+            frame_end = scene_end
+            if cmds.attributeQuery("frame_start", node=node, exists=True):
+                try:
+                    frame_start = int(cmds.getAttr(f"{node}.frame_start"))
+                except Exception:
+                    pass
+            if cmds.attributeQuery("frame_end", node=node, exists=True):
+                try:
+                    frame_end = int(cmds.getAttr(f"{node}.frame_end"))
+                except Exception:
+                    pass
 
             asset_data = {
                 "node": node,
@@ -965,6 +1277,9 @@ class PublishWindow(QtWidgets.QDialog):
                 "asset_name": asset_name,
                 "asset_id": asset_id,
                 "asset_type": asset_type,
+                "playblast_camera": playblast_camera,
+                "frame_start": frame_start,
+                "frame_end": frame_end,
                 "components": [],
             }
 
@@ -1025,21 +1340,6 @@ class PublishWindow(QtWidgets.QDialog):
             )
             return
 
-        # Create playblast (only if checkbox is on)
-        playblast_path = None
-        camera = self._camera_combo.currentText()
-        if camera and self._playblast_cb.isChecked():
-            try:
-                try:
-                    from .create_playblast import create_playblast
-                except ImportError:
-                    from create_playblast import create_playblast
-                playblast_path = create_playblast(camera)
-                print(f"[Publish] Playblast created: {playblast_path}")
-            except Exception as exc:
-                _log.error("Playblast creation failed: %s", exc)
-                print(f"[Publish] Playblast FAILED: {exc}")
-
         session = _get_ftrack_session()
 
         # Record publish time once (before the loop) so all tasks in the
@@ -1061,6 +1361,27 @@ class PublishWindow(QtWidgets.QDialog):
             task_id = asset_data["task_id"]
             asset_id = asset_data["asset_id"]
             asset_type = asset_data["asset_type"]
+
+            # Create playblast for this asset (camera and frame range stored per node)
+            playblast_path = None
+            camera = asset_data.get("playblast_camera", "")
+            frame_start = asset_data.get("frame_start")
+            frame_end = asset_data.get("frame_end")
+            if camera:
+                try:
+                    try:
+                        from .create_playblast import create_playblast
+                    except ImportError:
+                        from create_playblast import create_playblast
+                    playblast_path = create_playblast(
+                        camera,
+                        start_frame=frame_start,
+                        end_frame=frame_end,
+                    )
+                    print(f"[Publish] Playblast created for '{asset_name}': {playblast_path}")
+                except Exception as exc:
+                    _log.error("Playblast creation failed for %s: %s", asset_name, exc)
+                    print(f"[Publish] Playblast FAILED for '{asset_name}': {exc}")
 
             # Export component files and build component list
             comp_list = []
@@ -1087,7 +1408,7 @@ class PublishWindow(QtWidgets.QDialog):
                 for obj in objects:
                     if is_camera(obj):
                         try:
-                            baked = prepare_camera(obj)
+                            baked = prepare_camera(obj, start_frame=frame_start, end_frame=frame_end)
                             temp_cameras.append(baked)
                             # Replace the original camera with the baked one
                             export_objects = [
@@ -1176,6 +1497,19 @@ class PublishWindow(QtWidgets.QDialog):
             publisher = Publisher(session=session, dry_run=(session is None), auto_timelog=False)
             result = publisher.execute(job)
             results.append((asset_name, result))
+
+        # Queue transfers to additional checked locations
+        checked_loc_ids = [
+            loc_id for loc_id, cb in self._location_checkboxes.items()
+            if cb.isChecked()
+        ]
+        if checked_loc_ids:
+            all_component_ids = []
+            for _, result in results:
+                if result.success:
+                    all_component_ids.extend(result.component_ids)
+            if all_component_ids:
+                self._queue_transfers(session, all_component_ids, checked_loc_ids)
 
         # Show results
         success_count = sum(1 for _, r in results if r.success)
