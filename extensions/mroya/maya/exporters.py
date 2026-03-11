@@ -27,13 +27,27 @@ def _strip_ext(file_path: str) -> str:
     return str(p.parent / p.stem)
 
 
-def export_fbx(objects: list[str], file_path: str, ascii: bool = True) -> str:
+def export_fbx(
+    objects: list[str],
+    file_path: str,
+    ascii: bool = True,
+    input_connections: bool = False,
+    blend_shapes: bool = True,
+    bake_animation: bool = True,
+    bake_start: int | None = None,
+    bake_end: int | None = None,
+) -> str:
     """Export selected objects as FBX.
 
     Args:
         objects: Maya objects to export.
         file_path: Destination path.
-        ascii: When True (default) write ASCII FBX; when False write binary FBX.
+        ascii: Write ASCII FBX when True (default), binary otherwise.
+        input_connections: Export input connections. Off by default.
+        blend_shapes: Export blend shapes. On by default.
+        bake_animation: Bake complex animation. Off by default.
+        bake_start: First frame for bake. Uses scene start if None.
+        bake_end: Last frame for bake. Uses scene end if None.
     """
     _select_objects(objects)
 
@@ -42,6 +56,15 @@ def export_fbx(objects: list[str], file_path: str, ascii: bool = True) -> str:
         cmds.loadPlugin("fbxmaya")
 
     mel.eval(f'FBXExportInAscii -v {"true" if ascii else "false"}')
+    mel.eval(f'FBXExportInputConnections -v {"true" if input_connections else "false"}')
+    mel.eval(f'FBXExportShapes -v {"true" if blend_shapes else "false"}')
+    mel.eval(f'FBXExportBakeComplexAnimation -v {"true" if bake_animation else "false"}')
+    if bake_animation:
+        if bake_start is not None:
+            mel.eval(f'FBXExportBakeComplexStart -v {int(bake_start)}')
+        if bake_end is not None:
+            mel.eval(f'FBXExportBakeComplexEnd -v {int(bake_end)}')
+        mel.eval('FBXExportBakeComplexStep -v 1')
 
     cmds.file(
         _strip_ext(file_path),
@@ -49,7 +72,10 @@ def export_fbx(objects: list[str], file_path: str, ascii: bool = True) -> str:
         type="FBX export",
         exportSelected=True,
     )
-    _log.info("Exported FBX (ascii=%s): %s", ascii, file_path)
+    _log.info(
+        "Exported FBX (ascii=%s, input_connections=%s, blend_shapes=%s, bake=%s): %s",
+        ascii, input_connections, blend_shapes, bake_animation, file_path,
+    )
     return file_path
 
 
@@ -180,5 +206,13 @@ def export_component(
         )
     opts = options or {}
     if ext == "fbx":
-        return exporter(objects, file_path, ascii=opts.get("ascii", True))
+        return exporter(
+            objects, file_path,
+            ascii=opts.get("ascii", True),
+            input_connections=opts.get("input_connections", False),
+            blend_shapes=opts.get("blend_shapes", True),
+            bake_animation=opts.get("bake_animation", True),
+            bake_start=opts.get("frame_start"),
+            bake_end=opts.get("frame_end"),
+        )
     return exporter(objects, file_path)

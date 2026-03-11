@@ -146,8 +146,9 @@ def export_bone_camera(
 ) -> str:
     """Export the bone camera rig as FBX.
 
-    Selects *root_joint* (which carries the child camera_joint in the
-    hierarchy) and *box_transform*, then delegates to ``export_fbx``.
+    Selects root_joint and box_transform with hierarchy=True so FBX picks up
+    child joints, mesh shapes, and the skin cluster automatically.
+    Triangulation is handled by the FBX exporter flag (no mesh modification).
 
     Args:
         root_joint: Root joint of the rig (camera_joint is its child).
@@ -158,12 +159,24 @@ def export_bone_camera(
     Returns:
         The exported file path.
     """
-    try:
-        from .exporters import export_fbx
-    except ImportError:
-        from exporters import export_fbx
+    # Select everything related to the rig — hierarchy=True picks up child
+    # joints and mesh shapes so FBX sees the full skeletal mesh.
+    cmds.select(clear=True)
+    cmds.select([root_joint, box_transform], replace=True, hierarchy=True)
 
-    return export_fbx([root_joint, box_transform], file_path, ascii=ascii)
+    if not cmds.pluginInfo("fbxmaya", query=True, loaded=True):
+        cmds.loadPlugin("fbxmaya")
+
+    import maya.mel as mel
+    mel.eval(f'FBXExportInAscii -v {"true" if ascii else "false"}')
+    mel.eval('FBXExportTriangulate -v true')
+
+    from pathlib import Path
+    base = str(Path(file_path).parent / Path(file_path).stem)
+    cmds.file(base, force=True, type="FBX export", exportSelected=True)
+
+    _log.info("Exported bone camera FBX (ascii=%s): %s", ascii, file_path)
+    return file_path
 
 
 # ---------------------------------------------------------------------------

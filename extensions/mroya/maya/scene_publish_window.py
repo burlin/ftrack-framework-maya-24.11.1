@@ -850,6 +850,7 @@ class ComponentObjectsWindow(QtWidgets.QDialog):
 
         # --- Object list ---
         self._obj_list = QtWidgets.QListWidget()
+        self._obj_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         layout.addWidget(self._obj_list)
 
         # --- Buttons ---
@@ -976,10 +977,25 @@ class ComponentOptionsWindow(QtWidgets.QDialog):
         self._widgets: dict = {}
 
         if self._ext == "fbx":
-            cb = QtWidgets.QCheckBox("ASCII export")
-            cb.setChecked(bool(opts.get("ascii", True)))
-            layout.addWidget(cb)
-            self._widgets["ascii"] = cb
+            cb_ascii = QtWidgets.QCheckBox("ASCII export")
+            cb_ascii.setChecked(bool(opts.get("ascii", True)))
+            layout.addWidget(cb_ascii)
+            self._widgets["ascii"] = cb_ascii
+
+            cb_ic = QtWidgets.QCheckBox("Input connections")
+            cb_ic.setChecked(bool(opts.get("input_connections", False)))
+            layout.addWidget(cb_ic)
+            self._widgets["input_connections"] = cb_ic
+
+            cb_bs = QtWidgets.QCheckBox("Blend shapes")
+            cb_bs.setChecked(bool(opts.get("blend_shapes", True)))
+            layout.addWidget(cb_bs)
+            self._widgets["blend_shapes"] = cb_bs
+
+            cb_bake = QtWidgets.QCheckBox("Bake animation")
+            cb_bake.setChecked(bool(opts.get("bake_animation", True)))
+            layout.addWidget(cb_bake)
+            self._widgets["bake_animation"] = cb_bake
         else:
             layout.addWidget(QtWidgets.QLabel("No options available for this format."))
 
@@ -1552,7 +1568,11 @@ class PublishWindow(QtWidgets.QDialog):
                 # If any object is a camera, bake it first and export the baked copy
                 export_objects = list(objects)
                 for obj in objects:
-                    if is_camera(obj):
+                    try:
+                        obj_is_cam = is_camera(obj)
+                    except Exception:
+                        obj_is_cam = False
+                    if obj_is_cam:
                         try:
                             baked = prepare_camera(obj, start_frame=frame_start, end_frame=frame_end)
                             temp_cameras.append(baked)
@@ -1566,9 +1586,16 @@ class PublishWindow(QtWidgets.QDialog):
                             print(f"[Publish] Camera bake FAILED for '{obj}': {exc}")
 
                 try:
+                    # Merge asset frame range into options so FBX bake
+                    # animation can use it without storing it on the node.
+                    comp_opts = {
+                        **comp_options.get(comp_name, {}),
+                        "frame_start": frame_start,
+                        "frame_end": frame_end,
+                    }
                     export_component(
                         export_objects, file_path,
-                        options=comp_options.get(comp_name, {}),
+                        options=comp_opts,
                     )
                 except Exception as exc:
                     _log.error("Export failed for %s: %s", comp_name, exc)
@@ -1623,7 +1650,7 @@ class PublishWindow(QtWidgets.QDialog):
                             cam_jnt, camera,
                             start_frame=frame_start, end_frame=frame_end,
                         )
-                        export_bone_camera(root_jnt, box_mesh, bone_cam_file)
+                        export_bone_camera(root_jnt, box_mesh, bone_cam_file, ascii=False)
                         comp_list.append({
                             "name": f"{cam_short}_baked_to_bone",
                             "file_path": bone_cam_file,
