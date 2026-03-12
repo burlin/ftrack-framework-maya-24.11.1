@@ -56,86 +56,69 @@ def _export_fbx_strip_namespaces(
     bake_start: int,
     bake_end: int,
 ) -> None:
-    """Duplicate hierarchy, strip namespaces, bake, export, then clean up.
+    """Direct port of the proven standalone strip-namespace export script.
 
-    This mirrors the standalone strip-namespace export script:
-    1. Duplicate each root (no input connections, no upstream nodes).
-    2. Unlock transforms and rename all duplicated nodes to strip namespaces.
-    3. Constrain duplicate to original skeleton.
-    4. Bake the full frame range on the duplicate.
-    5. Delete constraints and export the clean duplicate.
-    6. Delete the temporary duplicate regardless of success or failure.
+    For each root: duplicate → strip namespaces → constrain to original →
+    bake → delete constraints → export → delete duplicate.
     """
-    tmp_roots = []
+    # objects[0] is the root — same as selection[0] in the standalone script.
+    # Never iterate: if the component list contains the root plus descendants,
+    # each iteration would trigger a full bake of the entire timeline.
+    root = objects[0]
+    new_root_name = None
     constraints = []
 
     try:
-        for root in objects:
-            tmp_root = cmds.duplicate(
-                root,
-                returnRootsOnly=True,
-                upstreamNodes=False,
-                inputConnections=False,
-                renameChildren=True,
-            )[0]
-            tmp_roots.append(tmp_root)
+        tmp_root = cmds.duplicate(
+            root,
+            returnRootsOnly=True,
+            upstreamNodes=False,
+            inputConnections=False,
+            renameChildren=True,
+        )[0]
 
-            # Collect and sort deepest-first so renames don't invalidate parent paths
-            all_tmp = cmds.listRelatives(tmp_root, allDescendents=True, fullPath=True) or []
-            all_tmp.append(tmp_root)
-            all_tmp.sort(key=len, reverse=True)
+        all_tmp_nodes = cmds.listRelatives(tmp_root, allDescendents=True, fullPath=True) or []
+        all_tmp_nodes.append(tmp_root)
+        all_tmp_nodes.sort(key=len, reverse=True)
 
-            new_root_name = tmp_root
-            for i, node in enumerate(all_tmp):
-                # Unlock standard transform channels
-                for attr in ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz", "v"):
-                    full_attr = f"{node}.{attr}"
-                    if cmds.objExists(full_attr):
+        new_root_name = tmp_root
+        for node in all_tmp_nodes:
+            for attr in ['t', 'r', 's', 'v']:
+                for axis in ['x', 'y', 'z']:
+                    at = f"{node}.{attr}{axis}" if attr != 'v' else f"{node}.{attr}"
+                    if cmds.objExists(at):
                         try:
-                            cmds.setAttr(full_attr, lock=False)
+                            cmds.setAttr(at, lock=False)
                         except Exception:
                             pass
 
-                short = node.split("|")[-1]
-                if ":" in short:
-                    clean = short.split(":")[-1]
-                    try:
-                        actual = cmds.rename(node, clean)
-                    except Exception:
-                        actual = short
-                else:
-                    actual = short
+            if ":" in node:
+                clean_name = node.split("|")[-1].split(":")[-1]
+                actual_name = cmds.rename(node, clean_name)
+            else:
+                actual_name = node.split("|")[-1]
 
-                # The root is the last (shallowest) entry after length-desc sort
-                if i == len(all_tmp) - 1:
-                    new_root_name = actual
+            new_root_name = actual_name  # last iteration = root (shortest path)
 
-            tmp_roots[-1] = new_root_name  # update reference to renamed root
+        original_hierarchy = cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
+        original_hierarchy.append(root)
 
-            # Constrain duplicate to original so bake captures driven animation
-            orig_hier = cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
-            orig_hier.append(root)
-            for orig in orig_hier:
-                clean_target = orig.split("|")[-1].split(":")[-1]
-                if cmds.objExists(clean_target) and clean_target != orig.split("|")[-1]:
-                    try:
-                        con = cmds.parentConstraint(orig, clean_target, maintainOffset=False)
-                        scl = cmds.scaleConstraint(orig, clean_target, maintainOffset=False)
-                        constraints.extend([con[0], scl[0]])
-                    except Exception:
-                        pass
+        for orig in original_hierarchy:
+            clean_target = orig.split("|")[-1].split(":")[-1]
+            if cmds.objExists(clean_target) and clean_target != orig:
+                try:
+                    con = cmds.parentConstraint(orig, clean_target, mo=False)
+                    scl = cmds.scaleConstraint(orig, clean_target, mo=False)
+                    constraints.extend([con[0], scl[0]])
+                except RuntimeError:
+                    pass
 
-        # Bake the full duplicated hierarchies
-        bake_nodes: list[str] = []
-        for tr in tmp_roots:
-            cmds.select(tr, hierarchy=True)
-            bake_nodes.extend(cmds.ls(selection=True))
-
+        cmds.select(new_root_name, hierarchy=True)
         cmds.bakeResults(
-            bake_nodes,
+            cmds.ls(selection=True),
             time=(bake_start, bake_end),
-            simulation=False,   # True is for nCloth/particles; constraints don't need it
-            hierarchy="none",   # nodes already fully collected above — avoids redundant re-traversal
+            simulation=True,
+            hierarchy="both",
             sampleBy=1,
             disableImplicitControl=True,
             preserveOutsideKeys=True,
@@ -146,17 +129,15 @@ def _export_fbx_strip_namespaces(
             cmds.delete(constraints)
             constraints = []
 
-        # Move each tmp root to world so the FBX exporter cannot walk up to a
-        # shared parent group and pull in the original (namespaced) hierarchy.
-        for tr in tmp_roots:
-            if cmds.listRelatives(tr, parent=True):
-                cmds.parent(tr, world=True)
+        if cmds.listRelatives(new_root_name, parent=True):
+            cmds.parent(new_root_name, world=True)
 
-        _select_objects(tmp_roots)
-        mel.eval('FBXResetExport()')  # clear any stale settings from a previous export
+        cmds.select(new_root_name)
+        mel.eval('FBXResetExport()')
         _apply_fbx_flags(ascii, input_connections, blend_shapes, bake_animation,
                          bake_start, bake_end)
-        cmds.file(_strip_ext(file_path), force=True, type="FBX export", exportSelected=True)
+        cmds.file(_strip_ext(file_path), force=True, type="FBX export",
+                  preserveReferences=True, exportSelected=True)
 
     finally:
         if constraints:
@@ -164,12 +145,11 @@ def _export_fbx_strip_namespaces(
                 cmds.delete(constraints)
             except Exception:
                 pass
-        for tr in tmp_roots:
-            if cmds.objExists(tr):
-                try:
-                    cmds.delete(tr)
-                except Exception:
-                    pass
+        if new_root_name and cmds.objExists(new_root_name):
+            try:
+                cmds.delete(new_root_name)
+            except Exception:
+                pass
 
 
 def export_fbx(
