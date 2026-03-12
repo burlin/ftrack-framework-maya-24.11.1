@@ -134,8 +134,8 @@ def _export_fbx_strip_namespaces(
         cmds.bakeResults(
             bake_nodes,
             time=(bake_start, bake_end),
-            simulation=True,
-            hierarchy="below",
+            simulation=False,   # True is for nCloth/particles; constraints don't need it
+            hierarchy="none",   # nodes already fully collected above — avoids redundant re-traversal
             sampleBy=1,
             disableImplicitControl=True,
             preserveOutsideKeys=True,
@@ -146,7 +146,14 @@ def _export_fbx_strip_namespaces(
             cmds.delete(constraints)
             constraints = []
 
+        # Move each tmp root to world so the FBX exporter cannot walk up to a
+        # shared parent group and pull in the original (namespaced) hierarchy.
+        for tr in tmp_roots:
+            if cmds.listRelatives(tr, parent=True):
+                cmds.parent(tr, world=True)
+
         _select_objects(tmp_roots)
+        mel.eval('FBXResetExport()')  # clear any stale settings from a previous export
         _apply_fbx_flags(ascii, input_connections, blend_shapes, bake_animation,
                          bake_start, bake_end)
         cmds.file(_strip_ext(file_path), force=True, type="FBX export", exportSelected=True)
