@@ -27,6 +27,144 @@ def _strip_ext(file_path: str) -> str:
     return str(p.parent / p.stem)
 
 
+def _apply_fbx_flags(
+    ascii: bool,
+    input_connections: bool,
+    blend_shapes: bool,
+    bake_animation: bool,
+    bake_start: int,
+    bake_end: int,
+) -> None:
+    """Set FBX MEL export flags. Assumes FBX plugin is already loaded."""
+    mel.eval(f'FBXExportInAscii -v {"true" if ascii else "false"}')
+    mel.eval(f'FBXExportInputConnections -v {"true" if input_connections else "false"}')
+    mel.eval(f'FBXExportShapes -v {"true" if blend_shapes else "false"}')
+    mel.eval(f'FBXExportBakeComplexAnimation -v {"true" if bake_animation else "false"}')
+    if bake_animation:
+        mel.eval(f'FBXExportBakeComplexStart -v {bake_start}')
+        mel.eval(f'FBXExportBakeComplexEnd -v {bake_end}')
+        mel.eval('FBXExportBakeComplexStep -v 1')
+
+
+def _export_fbx_strip_namespaces(
+    objects: list[str],
+    file_path: str,
+    ascii: bool,
+    input_connections: bool,
+    blend_shapes: bool,
+    bake_animation: bool,
+    bake_start: int,
+    bake_end: int,
+) -> None:
+    """Duplicate hierarchy, strip namespaces, bake, export, then clean up.
+
+    This mirrors the standalone strip-namespace export script:
+    1. Duplicate each root (no input connections, no upstream nodes).
+    2. Unlock transforms and rename all duplicated nodes to strip namespaces.
+    3. Constrain duplicate to original skeleton.
+    4. Bake the full frame range on the duplicate.
+    5. Delete constraints and export the clean duplicate.
+    6. Delete the temporary duplicate regardless of success or failure.
+    """
+    tmp_roots = []
+    constraints = []
+
+    try:
+        for root in objects:
+            tmp_root = cmds.duplicate(
+                root,
+                returnRootsOnly=True,
+                upstreamNodes=False,
+                inputConnections=False,
+                renameChildren=True,
+            )[0]
+            tmp_roots.append(tmp_root)
+
+            # Collect and sort deepest-first so renames don't invalidate parent paths
+            all_tmp = cmds.listRelatives(tmp_root, allDescendents=True, fullPath=True) or []
+            all_tmp.append(tmp_root)
+            all_tmp.sort(key=len, reverse=True)
+
+            new_root_name = tmp_root
+            for i, node in enumerate(all_tmp):
+                # Unlock standard transform channels
+                for attr in ("tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz", "v"):
+                    full_attr = f"{node}.{attr}"
+                    if cmds.objExists(full_attr):
+                        try:
+                            cmds.setAttr(full_attr, lock=False)
+                        except Exception:
+                            pass
+
+                short = node.split("|")[-1]
+                if ":" in short:
+                    clean = short.split(":")[-1]
+                    try:
+                        actual = cmds.rename(node, clean)
+                    except Exception:
+                        actual = short
+                else:
+                    actual = short
+
+                # The root is the last (shallowest) entry after length-desc sort
+                if i == len(all_tmp) - 1:
+                    new_root_name = actual
+
+            tmp_roots[-1] = new_root_name  # update reference to renamed root
+
+            # Constrain duplicate to original so bake captures driven animation
+            orig_hier = cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
+            orig_hier.append(root)
+            for orig in orig_hier:
+                clean_target = orig.split("|")[-1].split(":")[-1]
+                if cmds.objExists(clean_target) and clean_target != orig.split("|")[-1]:
+                    try:
+                        con = cmds.parentConstraint(orig, clean_target, maintainOffset=False)
+                        scl = cmds.scaleConstraint(orig, clean_target, maintainOffset=False)
+                        constraints.extend([con[0], scl[0]])
+                    except Exception:
+                        pass
+
+        # Bake the full duplicated hierarchies
+        bake_nodes: list[str] = []
+        for tr in tmp_roots:
+            cmds.select(tr, hierarchy=True)
+            bake_nodes.extend(cmds.ls(selection=True))
+
+        cmds.bakeResults(
+            bake_nodes,
+            time=(bake_start, bake_end),
+            simulation=True,
+            hierarchy="below",
+            sampleBy=1,
+            disableImplicitControl=True,
+            preserveOutsideKeys=True,
+            minimizeRotation=True,
+        )
+
+        if constraints:
+            cmds.delete(constraints)
+            constraints = []
+
+        _select_objects(tmp_roots)
+        _apply_fbx_flags(ascii, input_connections, blend_shapes, bake_animation,
+                         bake_start, bake_end)
+        cmds.file(_strip_ext(file_path), force=True, type="FBX export", exportSelected=True)
+
+    finally:
+        if constraints:
+            try:
+                cmds.delete(constraints)
+            except Exception:
+                pass
+        for tr in tmp_roots:
+            if cmds.objExists(tr):
+                try:
+                    cmds.delete(tr)
+                except Exception:
+                    pass
+
+
 def export_fbx(
     objects: list[str],
     file_path: str,
@@ -36,6 +174,7 @@ def export_fbx(
     bake_animation: bool = True,
     bake_start: int | None = None,
     bake_end: int | None = None,
+    strip_namespaces: bool = True,
 ) -> str:
     """Export selected objects as FBX.
 
@@ -45,27 +184,39 @@ def export_fbx(
         ascii: Write ASCII FBX when True (default), binary otherwise.
         input_connections: Export input connections. Off by default.
         blend_shapes: Export blend shapes. On by default.
-        bake_animation: Bake complex animation. Off by default.
+        bake_animation: Bake complex animation. On by default.
         bake_start: First frame for bake. Uses scene start if None.
         bake_end: Last frame for bake. Uses scene end if None.
+        strip_namespaces: When True (default), duplicate the hierarchy, strip
+            all namespaces from node names, bake the animation on the clean
+            duplicate, export it, then delete the duplicate.  When False,
+            export the original selection as-is.
     """
-    _select_objects(objects)
-
     # Ensure FBX plugin is loaded
     if not cmds.pluginInfo("fbxmaya", query=True, loaded=True):
         cmds.loadPlugin("fbxmaya")
 
-    mel.eval(f'FBXExportInAscii -v {"true" if ascii else "false"}')
-    mel.eval(f'FBXExportInputConnections -v {"true" if input_connections else "false"}')
-    mel.eval(f'FBXExportShapes -v {"true" if blend_shapes else "false"}')
-    mel.eval(f'FBXExportBakeComplexAnimation -v {"true" if bake_animation else "false"}')
-    if bake_animation:
-        if bake_start is not None:
-            mel.eval(f'FBXExportBakeComplexStart -v {int(bake_start)}')
-        if bake_end is not None:
-            mel.eval(f'FBXExportBakeComplexEnd -v {int(bake_end)}')
-        mel.eval('FBXExportBakeComplexStep -v 1')
+    start = int(bake_start) if bake_start is not None else int(cmds.playbackOptions(q=True, min=True))
+    end = int(bake_end) if bake_end is not None else int(cmds.playbackOptions(q=True, max=True))
 
+    if strip_namespaces:
+        _export_fbx_strip_namespaces(
+            objects, file_path,
+            ascii=ascii,
+            input_connections=input_connections,
+            blend_shapes=blend_shapes,
+            bake_animation=bake_animation,
+            bake_start=start,
+            bake_end=end,
+        )
+        _log.info(
+            "Exported FBX with namespace stripping (ascii=%s, bake=%s): %s",
+            ascii, bake_animation, file_path,
+        )
+        return file_path
+
+    _select_objects(objects)
+    _apply_fbx_flags(ascii, input_connections, blend_shapes, bake_animation, start, end)
     cmds.file(
         _strip_ext(file_path),
         force=True,
@@ -214,5 +365,6 @@ def export_component(
             bake_animation=opts.get("bake_animation", True),
             bake_start=opts.get("frame_start"),
             bake_end=opts.get("frame_end"),
+            strip_namespaces=opts.get("strip_namespaces", True),
         )
     return exporter(objects, file_path)

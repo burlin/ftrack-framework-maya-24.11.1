@@ -996,6 +996,11 @@ class ComponentOptionsWindow(QtWidgets.QDialog):
             cb_bake.setChecked(bool(opts.get("bake_animation", True)))
             layout.addWidget(cb_bake)
             self._widgets["bake_animation"] = cb_bake
+
+            cb_strip_ns = QtWidgets.QCheckBox("Strip namespaces")
+            cb_strip_ns.setChecked(bool(opts.get("strip_namespaces", True)))
+            layout.addWidget(cb_strip_ns)
+            self._widgets["strip_namespaces"] = cb_strip_ns
         else:
             layout.addWidget(QtWidgets.QLabel("No options available for this format."))
 
