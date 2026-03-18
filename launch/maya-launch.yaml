@@ -32,8 +32,10 @@ search_path:
   linux:
     prefix:
       - "/"
-      - usr
-      - autodesk
+      - home
+      - costa
+      - mroya
+      - scripts
       - maya.+
     expression:
       - bin

@@ -651,6 +651,21 @@ def install_menu() -> None:
         # Install selection callback for publisher panel
         _install_selection_callback()
 
+        # Install ftrack HUD.
+        # Import hud.py directly via importlib to avoid triggering
+        # mroya/maya/__init__.py (which pulls in scene UI modules that need
+        # ftrack_inout — not yet on sys.path at this point).
+        try:
+            import importlib.util as _ilu
+            _bootstrap_python_paths()   # ensure ftrack_inout + ftrack_api are reachable
+            _hud_path = Path(__file__).resolve().parents[2] / 'extensions' / 'mroya' / 'maya' / 'hud.py'
+            _hud_spec = _ilu.spec_from_file_location('mroya_maya_hud', _hud_path)
+            _hud_mod  = _ilu.module_from_spec(_hud_spec)
+            _hud_spec.loader.exec_module(_hud_mod)
+            _hud_mod.install_hud()
+        except Exception as hud_exc:
+            print("[mroya_maya_taskhub] HUD install failed:", hud_exc)
+
         print(
             "[mroya_maya_taskhub] Menu installed under 'Mroya' -> "
             "'Open Task Browser', 'Open User Tasks', 'Ftrack Input', "
