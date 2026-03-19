@@ -423,19 +423,32 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
         self._camera_combo.addItem("No Playblast")
+        self._camera_combo.addItem("Turnaround Camera")
         if MAYA_AVAILABLE:
             for shape in cmds.ls(type="camera") or []:
                 transforms = cmds.listRelatives(shape, parent=True, fullPath=False) or []
                 if transforms:
                     self._camera_combo.addItem(transforms[0])
-        # Restore saved value
+        # Restore saved value or auto-select Turnaround for rig/geo assets
         current_cam = ""
         if MAYA_AVAILABLE and cmds.attributeQuery("playblast_camera", node=node, exists=True):
             current_cam = cmds.getAttr(f"{node}.playblast_camera") or ""
+        _asset_type_for_cam = ""
+        if MAYA_AVAILABLE and cmds.attributeQuery("asset_type", node=node, exists=True):
+            _asset_type_for_cam = (cmds.getAttr(f"{node}.asset_type") or "").lower()
         if current_cam:
-            idx = self._camera_combo.findText(current_cam)
+            # __turnaround__ sentinel maps to the display item "Turnaround Camera"
+            lookup = "Turnaround Camera" if current_cam == "__turnaround__" else current_cam
+            idx = self._camera_combo.findText(lookup)
             if idx >= 0:
                 self._camera_combo.setCurrentIndex(idx)
+        elif _asset_type_for_cam in ("rig", "geo", "geometry"):
+            self._camera_combo.setCurrentIndex(self._camera_combo.findText("Turnaround Camera"))
+            # Signal not connected yet — persist directly so publish picks it up
+            if MAYA_AVAILABLE:
+                if not cmds.attributeQuery("playblast_camera", node=node, exists=True):
+                    cmds.addAttr(node, longName="playblast_camera", dataType="string")
+                cmds.setAttr(f"{node}.playblast_camera", "__turnaround__", type="string")
         self._camera_combo.currentTextChanged.connect(self._on_camera_changed)
         cam_row.addWidget(self._camera_combo)
         layout.addLayout(cam_row)
@@ -591,10 +604,15 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             return
         if not cmds.attributeQuery("playblast_camera", node=self._node, exists=True):
             cmds.addAttr(self._node, longName="playblast_camera", dataType="string")
-        value = "" if text == "No Playblast" else text
+        if text == "No Playblast":
+            value = ""
+        elif text == "Turnaround Camera":
+            value = "__turnaround__"
+        else:
+            value = text
         cmds.setAttr(f"{self._node}.playblast_camera", value, type="string")
-        # Bone camera export only makes sense when a camera is selected
-        self._bone_camera_cb.setEnabled(bool(value))
+        # Bone camera export only makes sense with a real scene camera
+        self._bone_camera_cb.setEnabled(bool(value) and value != "__turnaround__")
 
     def _on_bone_camera_changed(self, state: int):
         """Save the bone camera export flag to the node attribute."""
@@ -727,8 +745,10 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         asset_id = self._existing_ids.get(asset_name, "")
         asset_type = self._existing_types.get(asset_name, "")
 
-        # Look up components from predefined asset definitions by name/type
-        comps = self._get_components_for_asset(asset_name, asset_type)
+        # Only write default components if the node has none configured yet
+        comps = None
+        if not self._node_has_components():
+            comps = self._get_components_for_asset(asset_name, asset_type)
 
         self._write_asset_to_node(asset_name, asset_id, components=comps)
 
@@ -737,6 +757,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             if not cmds.attributeQuery("asset_type", node=self._node, exists=True):
                 cmds.addAttr(self._node, longName="asset_type", dataType="string")
             cmds.setAttr(f"{self._node}.asset_type", asset_type, type="string")
+        self._update_camera_combo()
 
         print(f"[Publisher Setup] Using existing asset '{asset_name}' (id: {asset_id}, components: {comps})")
 
@@ -765,23 +786,55 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             )
             return
 
-        comps = adef.get("components", [])
+        # Only write default components if the node has none configured yet
+        comps = None if self._node_has_components() else adef.get("components", [])
         self._write_asset_to_node(asset_name, "", components=comps)
 
-        # Store asset_type on the node (use name for ftrack AssetType compatibility)
+        # Store asset_type on the node
         if MAYA_AVAILABLE:
             if not cmds.attributeQuery("asset_type", node=self._node, exists=True):
                 cmds.addAttr(self._node, longName="asset_type", dataType="string")
             cmds.setAttr(
-                f"{self._node}.asset_type", adef.get("name", ""), type="string"
+                f"{self._node}.asset_type", adef.get("type", ""), type="string"
             )
+        self._update_camera_combo()
 
         print(
             f"[Publisher Setup] Applied new asset '{asset_name}' "
-            f"(type: {adef.get('name', '')}, components: {comps})"
+            f"(type: {adef.get('type', '')}, components: {comps})"
         )
 
     # ------------------------------------------------------------------
+    def _update_camera_combo(self):
+        """Auto-select Turnaround Camera when a rig/geo asset type is applied."""
+        if not MAYA_AVAILABLE:
+            return
+        asset_type = ""
+        if cmds.attributeQuery("asset_type", node=self._node, exists=True):
+            asset_type = (cmds.getAttr(f"{self._node}.asset_type") or "").lower()
+
+        if asset_type in ("rig", "geo", "geometry") and self._camera_combo.currentText() == "No Playblast":
+            idx = self._camera_combo.findText("Turnaround Camera")
+            if idx >= 0:
+                self._camera_combo.setCurrentIndex(idx)
+                # setCurrentIndex triggers currentTextChanged which calls _on_camera_changed,
+                # saving "__turnaround__" to the node automatically
+
+    # ------------------------------------------------------------------
+    def _node_has_components(self) -> bool:
+        """Return True if the node already has at least one component configured."""
+        if not MAYA_AVAILABLE:
+            return False
+        if not cmds.attributeQuery("components", node=self._node, exists=True):
+            return False
+        raw = cmds.getAttr(f"{self._node}.components") or ""
+        if not raw:
+            return False
+        try:
+            return bool(json.loads(raw))
+        except Exception:
+            return bool(raw.strip())
+
     def _get_components_for_asset(self, asset_name: str, asset_type: str) -> list[str]:
         """Look up components from predefined asset definitions by type or name."""
         at = asset_type.lower() if asset_type else ""
@@ -915,7 +968,7 @@ class ComponentObjectsWindow(QtWidgets.QDialog):
         """Add currently selected Maya scene objects to this component's list."""
         if not MAYA_AVAILABLE:
             return
-        selection = cmds.ls(selection=True, long=False) or []
+        selection = cmds.ls(selection=True, long=True) or []
         if not selection:
             QtWidgets.QMessageBox.warning(self, "Warning", "Nothing selected in the scene.")
             return
@@ -1195,20 +1248,13 @@ class PublishWindow(QtWidgets.QDialog):
 
             locations = session.query("Location").all()
 
-            try:
-                default_loc = session.pick_location()
-                default_loc_id = default_loc["id"] if default_loc else None
-            except Exception:
-                default_loc_id = None
-
             def _is_relevant(loc):
                 name = loc.get("name", "")
-                if loc["id"] == default_loc_id:
-                    return False
+                # Always-include these locations
                 if name in _ALWAYS_INCLUDE:
                     return True
                 # Match only locations whose name starts with "surname."
-                # (e.g. nalobin.local, nalobin.backup) — NOT k.nalobin.Local
+                # (e.g. nalobin.home.local, nalobin.local) — NOT k.nalobin.Local
                 if surname and name.lower().startswith(surname + "."):
                     return True
                 return False
@@ -1225,6 +1271,7 @@ class PublishWindow(QtWidgets.QDialog):
 
             for loc in extra_locs:
                 cb = QtWidgets.QCheckBox(loc["name"])
+                cb.setChecked(True)
                 self._loc_checkboxes_layout.addWidget(cb)
                 self._location_checkboxes[loc["id"]] = cb
 
@@ -1523,7 +1570,34 @@ class PublishWindow(QtWidgets.QDialog):
             camera = asset_data.get("playblast_camera", "")
             frame_start = asset_data.get("frame_start")
             frame_end = asset_data.get("frame_end")
-            if camera:
+            if camera == "__turnaround__":
+                try:
+                    try:
+                        from .create_playblast import create_turnaround_playblast
+                    except ImportError:
+                        from create_playblast import create_turnaround_playblast
+                    # Collect all objects across all components for this asset
+                    all_objects = [
+                        obj
+                        for cd in asset_data.get("components", [])
+                        for obj in cd.get("objects", [])
+                        if obj and cmds.objExists(obj)
+                    ]
+                    # Fall back to all visible mesh transforms when no objects are assigned
+                    if not all_objects:
+                        mesh_shapes = cmds.ls(type="mesh", visible=True, long=False) or []
+                        seen: set[str] = set()
+                        for shape in mesh_shapes:
+                            parents = cmds.listRelatives(shape, parent=True, fullPath=False) or []
+                            if parents and parents[0] not in seen:
+                                seen.add(parents[0])
+                                all_objects.append(parents[0])
+                    playblast_path = create_turnaround_playblast(all_objects)
+                    print(f"[Publish] Turnaround playblast created for '{asset_name}': {playblast_path}")
+                except Exception as exc:
+                    _log.error("Turnaround playblast failed for %s: %s", asset_name, exc)
+                    print(f"[Publish] Turnaround playblast FAILED for '{asset_name}': {exc}")
+            elif camera:
                 try:
                     try:
                         from .create_playblast import create_playblast

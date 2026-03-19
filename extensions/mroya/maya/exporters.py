@@ -61,10 +61,18 @@ def _export_fbx_strip_namespaces(
     For each root: duplicate → strip namespaces → constrain to original →
     bake → delete constraints → export → delete duplicate.
     """
-    # objects[0] is the root — same as selection[0] in the standalone script.
-    # Never iterate: if the component list contains the root plus descendants,
-    # each iteration would trigger a full bake of the entire timeline.
-    root = objects[0]
+    # Find the topmost object in the hierarchy — the one with the shortest
+    # full path. This handles the case where the user selects both a parent
+    # and a child joint; we want to export from the root downward so the
+    # entire hierarchy is captured, not just a subtree.
+    def _full_path(obj):
+        try:
+            fp = cmds.ls(obj, long=True)
+            return fp[0] if fp else obj
+        except Exception:
+            return obj
+
+    root = min(objects, key=lambda o: len(_full_path(o).split("|")))
     new_root_name = None
     constraints = []
 

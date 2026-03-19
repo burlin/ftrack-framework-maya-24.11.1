@@ -90,3 +90,101 @@ def create_playblast(
 
     _log.info("Created playblast: %s (camera: %s)", result_path, camera)
     return result_path
+
+
+def create_turnaround_playblast(
+    objects: list[str],
+    width: int = 1920,
+    height: int = 1080,
+    frames: int = 150,
+) -> str:
+    """Create a 360° turnaround playblast around the bounding box of *objects*.
+
+    Builds a temporary pivot group at the bounding-box centre, parents a
+    camera at *radius* distance, animates a full rotation over *frames* frames,
+    blasts, then cleans everything up.
+
+    Args:
+        objects: Maya transforms whose combined bounding box defines the focus.
+        width: Output width in pixels.
+        height: Output height in pixels.
+        frames: Number of frames for a full 360° orbit (default 50).
+
+    Returns:
+        File path of the created playblast movie.
+    """
+    if not objects:
+        raise ValueError("No objects provided for turnaround playblast")
+
+    # --- Bounding box ---
+    bb = cmds.exactWorldBoundingBox(*objects, calculateExactly=True)
+    xmin, ymin, zmin, xmax, ymax, zmax = bb
+    cx = (xmin + xmax) / 2.0
+    cy = (ymin + ymax) / 2.0
+    cz = (zmin + zmax) / 2.0
+
+    max_extent = max(xmax - xmin, ymax - ymin, zmax - zmin)
+    if max_extent < 0.001:
+        max_extent = 1.0  # fallback for degenerate bbox
+
+    radius = max_extent * 1.5
+    # Place pivot slightly above centre so the camera looks down on the object
+    elevation = (ymax - ymin) * 0.31
+    tilt_angle = -2.0  # degrees — gentle downward look
+
+
+    # --- Build temporary rig ---
+    pivot = cmds.group(empty=True, name="mroya_turnaround_pivot_tmp")
+    cmds.move(cx, cy + elevation, cz, pivot, absolute=True)
+
+    cam_t, _cam_s = cmds.camera(name="mroya_turnaround_cam_tmp")
+    cmds.parent(cam_t, pivot)
+    for attr in ["tx", "ty", "tz", "rx", "ry", "rz"]:
+        cmds.setAttr(f"{cam_t}.{attr}", 0)
+    # Camera sits radius units along +Z from pivot; Maya cameras face -Z so
+    # they naturally point back toward the pivot centre.
+    cmds.setAttr(f"{cam_t}.translateZ", radius)
+    cmds.setAttr(f"{cam_t}.rotateX", tilt_angle)
+
+    # Animate pivot Y: 0 → 360 with linear tangents so speed is constant
+    cmds.setKeyframe(pivot, attribute="rotateY", time=1, value=0)
+    cmds.setKeyframe(pivot, attribute="rotateY", time=frames, value=360)
+    cmds.keyTangent(
+        pivot, attribute="rotateY",
+        inTangentType="linear", outTangentType="linear",
+    )
+
+    # Deselect everything — keeps the viewport clean
+    cmds.select(clear=True)
+
+    # --- Playblast ---
+    temp_file = tempfile.NamedTemporaryFile(suffix=".mov", delete=False)
+    temp_path = temp_file.name
+    temp_file.close()
+
+    try:
+        cmds.lookThru(cam_t)
+        result_path = cmds.playblast(
+            st=1,
+            et=frames,
+            format="qt",
+            filename=temp_path,
+            width=width,
+            height=height,
+            showOrnaments=False,
+            percent=100,
+            compression="photo - JPEG",
+            quality=100,
+            viewer=False,
+            offScreen=True,
+            fo=True,
+        )
+    finally:
+        # Always clean up — pivot deletion removes the camera child too
+        try:
+            cmds.delete(pivot)
+        except Exception:
+            pass
+
+    _log.info("Created turnaround playblast: %s (%d frames)", result_path, frames)
+    return result_path
