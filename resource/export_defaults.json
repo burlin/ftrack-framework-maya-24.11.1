@@ -1,0 +1,43 @@
+{
+  "_comment": "Default export options per asset type and file extension. These are the base defaults — any options saved on the publish node override them. Keys match the option names used by each exporter.",
+
+  "Rig": {
+    "fbx": {
+      "ascii": false,
+      "bake_animation": false,
+      "blend_shapes": true,
+      "input_connections": true,
+      "strip_namespaces": false
+    }
+  },
+
+  "Animation": {
+    "fbx": {
+      "ascii": false,
+      "bake_animation": true,
+      "blend_shapes": true,
+      "input_connections": false,
+      "strip_namespaces": true
+    }
+  },
+
+  "Geometry": {
+    "fbx": {
+      "ascii": false,
+      "bake_animation": false,
+      "blend_shapes": false,
+      "input_connections": false,
+      "strip_namespaces": false
+    }
+  },
+
+  "Camera": {
+    "fbx": {
+      "ascii": true,
+      "bake_animation": true,
+      "blend_shapes": false,
+      "input_connections": false,
+      "strip_namespaces": false
+    }
+  }
+}

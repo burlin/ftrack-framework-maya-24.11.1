@@ -4,6 +4,7 @@ Each exporter selects the given objects and exports them to the specified path.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -11,6 +12,61 @@ import maya.cmds as cmds
 import maya.mel as mel
 
 _log = logging.getLogger(__name__)
+
+# Base defaults per format — used when no asset_type-specific entry exists in the JSON.
+# These are the lowest-priority fallback; export_defaults.json overrides them.
+_FORMAT_DEFAULTS: dict[str, dict] = {
+    "fbx": {
+        "ascii": True,
+        "input_connections": False,
+        "blend_shapes": True,
+        "bake_animation": True,
+        "strip_namespaces": True,
+    },
+}
+
+_DEFAULTS_CACHE: dict | None = None
+
+
+def _load_export_defaults() -> dict:
+    """Load export_defaults.json, caching after first read."""
+    global _DEFAULTS_CACHE
+    if _DEFAULTS_CACHE is not None:
+        return _DEFAULTS_CACHE
+    json_path = Path(__file__).resolve().parents[3] / "resource" / "export_defaults.json"
+    try:
+        with open(json_path, "r") as f:
+            _DEFAULTS_CACHE = json.load(f)
+        _log.info("Loaded export_defaults.json from %s", json_path)
+    except Exception as exc:
+        _log.warning("Could not load export_defaults.json (%s): %s", json_path, exc)
+        _DEFAULTS_CACHE = {}
+    return _DEFAULTS_CACHE
+
+
+def get_export_defaults(asset_type: str, ext: str) -> dict:
+    """Return fully merged export defaults for a given asset type and extension.
+
+    Priority (lowest → highest):
+      1. _FORMAT_DEFAULTS  — format-level base (e.g. FBX generic defaults)
+      2. export_defaults.json entry for asset_type + ext
+
+    Lookup is case-insensitive on asset_type.
+    Always returns a complete dict for known formats so callers don't need
+    their own per-key fallbacks.
+    """
+    ext = ext.lower()
+    base = dict(_FORMAT_DEFAULTS.get(ext, {}))
+
+    json_defaults = _load_export_defaults()
+    for key, val in json_defaults.items():
+        if key.startswith("_"):
+            continue
+        if key.lower() == asset_type.lower():
+            base.update(val.get(ext, {}))
+            break
+
+    return base
 
 
 def _select_objects(objects: list[str]):
@@ -257,6 +313,41 @@ def export_obj(objects: list[str], file_path: str) -> str:
     return file_path
 
 
+def export_abc(
+    objects: list[str],
+    file_path: str,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+) -> str:
+    """Export selected objects as Alembic (.abc).
+
+    Args:
+        objects: Maya objects to export.
+        file_path: Destination path (with or without .abc extension).
+        frame_start: First frame to export. Uses scene start if None.
+        frame_end: Last frame to export. Uses scene end if None.
+    """
+    if not cmds.pluginInfo("AbcExport", query=True, loaded=True):
+        cmds.loadPlugin("AbcExport")
+
+    start = int(frame_start) if frame_start is not None else int(cmds.playbackOptions(q=True, min=True))
+    end = int(frame_end) if frame_end is not None else int(cmds.playbackOptions(q=True, max=True))
+
+    # Ensure the path ends with .abc
+    out_path = str(file_path) if str(file_path).lower().endswith(".abc") else str(file_path) + ".abc"
+
+    roots = " ".join(f"-root {obj}" for obj in objects)
+    job_str = (
+        f"-frameRange {start} {end} "
+        f"-uvWrite -worldSpace -writeVisibility "
+        f"{roots} "
+        f"-file {out_path}"
+    )
+    cmds.AbcExport(j=job_str)
+    _log.info("Exported Alembic (frames %s–%s): %s", start, end, out_path)
+    return out_path
+
+
 def export_usd(objects: list[str], file_path: str) -> str:
     """Export selected objects as USD (binary)."""
     _select_objects(objects)
@@ -293,6 +384,7 @@ def export_usda(objects: list[str], file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 _EXPORTERS = {
+    "abc": export_abc,
     "fbx": export_fbx,
     "ma": export_ma,
     "obj": export_obj,
@@ -328,14 +420,21 @@ def export_component(
     objects: list[str],
     file_path: str,
     options: dict | None = None,
+    asset_type: str = "",
 ) -> str:
     """Export objects using the appropriate exporter based on file extension.
+
+    Options are resolved in priority order (lowest → highest):
+      1. Built-in fallback defaults (hardcoded)
+      2. export_defaults.json values for this asset_type + extension
+      3. Per-component options stored on the Maya publish node
 
     Args:
         objects: List of Maya object names to export.
         file_path: Destination file path (extension determines format).
-        options: Format-specific export options dict (e.g. ``{"ascii": True}``
-                 for FBX).
+        options: Format-specific export options already stored on the node.
+        asset_type: Asset type name (e.g. "Rig", "Animation") used to look up
+                    defaults from export_defaults.json.
 
     Returns:
         The file path of the exported file.
@@ -350,16 +449,27 @@ def export_component(
             f"Unsupported export format: '.{ext}'. "
             f"Supported: {', '.join(sorted(_EXPORTERS))}"
         )
-    opts = options or {}
+
+    # Build merged options: format base < JSON asset-type config < node-stored options
+    # get_export_defaults always returns a complete dict for known formats, so no
+    # per-key Python fallbacks are needed below.
+    opts = {**get_export_defaults(asset_type, ext), **(options or {})}
+
     if ext == "fbx":
         return exporter(
             objects, file_path,
-            ascii=opts.get("ascii", True),
-            input_connections=opts.get("input_connections", False),
-            blend_shapes=opts.get("blend_shapes", True),
-            bake_animation=opts.get("bake_animation", True),
+            ascii=opts["ascii"],
+            input_connections=opts["input_connections"],
+            blend_shapes=opts["blend_shapes"],
+            bake_animation=opts["bake_animation"],
             bake_start=opts.get("frame_start"),
             bake_end=opts.get("frame_end"),
-            strip_namespaces=opts.get("strip_namespaces", True),
+            strip_namespaces=opts["strip_namespaces"],
+        )
+    if ext == "abc":
+        return exporter(
+            objects, file_path,
+            frame_start=opts.get("frame_start"),
+            frame_end=opts.get("frame_end"),
         )
     return exporter(objects, file_path)

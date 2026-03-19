@@ -255,6 +255,40 @@ class ScenePublishWindow(QtWidgets.QDialog):
         self._on_scan_clicked()
 
 
+_FORMAT_DEFAULTS: dict = {
+    "fbx": {
+        "ascii": True,
+        "input_connections": False,
+        "blend_shapes": True,
+        "bake_animation": True,
+        "strip_namespaces": True,
+    },
+}
+
+
+def _get_component_defaults(asset_type: str, ext: str) -> dict:
+    """Return merged export defaults for asset_type + ext from export_defaults.json.
+
+    Priority: _FORMAT_DEFAULTS base < JSON asset-type entry.
+    No imports from exporters — reads the JSON directly.
+    """
+    ext = ext.lower()
+    base = dict(_FORMAT_DEFAULTS.get(ext, {}))
+    json_path = Path(__file__).resolve().parents[3] / "resource" / "export_defaults.json"
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        for key, val in data.items():
+            if key.startswith("_"):
+                continue
+            if key.lower() == asset_type.lower():
+                base.update(val.get(ext, {}))
+                break
+    except Exception as exc:
+        _log.warning("Could not load export_defaults.json (%s): %s", json_path, exc)
+    return base
+
+
 def _load_asset_definitions() -> tuple[list[dict], list[str]]:
     """Load predefined asset definitions and extensions from asset_definitions.json."""
     json_path = Path(__file__).resolve().parents[3] / "resource" / "asset_definitions.json"
@@ -303,6 +337,11 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         cur_layout.addWidget(self._current_label)
         cur_layout.addStretch(1)
         layout.addLayout(cur_layout)
+
+        # --- Asset mode status label ---
+        self._asset_mode_label = QtWidgets.QLabel("")
+        self._asset_mode_label.setStyleSheet("color: #5aabff; font-size: 11px; padding-left: 4px;")
+        layout.addWidget(self._asset_mode_label)
 
         # --- New Asset (predefined) row ---
         new_layout = QtWidgets.QHBoxLayout()
@@ -759,6 +798,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             cmds.setAttr(f"{self._node}.asset_type", asset_type, type="string")
         self._update_camera_combo()
 
+        self._asset_mode_label.setText(f"Using existing asset: {asset_name}")
         print(f"[Publisher Setup] Using existing asset '{asset_name}' (id: {asset_id}, components: {comps})")
 
     # ------------------------------------------------------------------
@@ -800,6 +840,7 @@ class PublisherSetupWindow(QtWidgets.QDialog):
             )
         self._update_camera_combo()
 
+        self._asset_mode_label.setText(f"Creating new asset: {asset_name}")
         print(
             f"[Publisher Setup] Applied new asset '{asset_name}' "
             f"(type: {adef.get('name', '')}, components: {comps})"
@@ -1032,27 +1073,27 @@ class ComponentOptionsWindow(QtWidgets.QDialog):
 
         if self._ext == "fbx":
             cb_ascii = QtWidgets.QCheckBox("ASCII export")
-            cb_ascii.setChecked(bool(opts.get("ascii", True)))
+            cb_ascii.setChecked(bool(opts.get("ascii")))
             layout.addWidget(cb_ascii)
             self._widgets["ascii"] = cb_ascii
 
             cb_ic = QtWidgets.QCheckBox("Input connections")
-            cb_ic.setChecked(bool(opts.get("input_connections", False)))
+            cb_ic.setChecked(bool(opts.get("input_connections")))
             layout.addWidget(cb_ic)
             self._widgets["input_connections"] = cb_ic
 
             cb_bs = QtWidgets.QCheckBox("Blend shapes")
-            cb_bs.setChecked(bool(opts.get("blend_shapes", True)))
+            cb_bs.setChecked(bool(opts.get("blend_shapes")))
             layout.addWidget(cb_bs)
             self._widgets["blend_shapes"] = cb_bs
 
             cb_bake = QtWidgets.QCheckBox("Bake animation")
-            cb_bake.setChecked(bool(opts.get("bake_animation", True)))
+            cb_bake.setChecked(bool(opts.get("bake_animation")))
             layout.addWidget(cb_bake)
             self._widgets["bake_animation"] = cb_bake
 
             cb_strip_ns = QtWidgets.QCheckBox("Strip namespaces")
-            cb_strip_ns.setChecked(bool(opts.get("strip_namespaces", True)))
+            cb_strip_ns.setChecked(bool(opts.get("strip_namespaces")))
             layout.addWidget(cb_strip_ns)
             self._widgets["strip_namespaces"] = cb_strip_ns
         else:
@@ -1083,7 +1124,13 @@ class ComponentOptionsWindow(QtWidgets.QDialog):
             return {}
 
     def _read_options(self) -> dict:
-        return self._read_all_options().get(self._comp_name, {})
+        """Return merged options: format base < JSON config < stored node options."""
+        asset_type = ""
+        if MAYA_AVAILABLE and cmds.attributeQuery("asset_type", node=self._node, exists=True):
+            asset_type = cmds.getAttr(f"{self._node}.asset_type") or ""
+        base = _get_component_defaults(asset_type, self._ext)
+        stored = self._read_all_options().get(self._comp_name, {})
+        return {**base, **stored}
 
     def _on_save(self):
         if not MAYA_AVAILABLE:
@@ -1676,6 +1723,7 @@ class PublishWindow(QtWidgets.QDialog):
                     export_component(
                         export_objects, file_path,
                         options=comp_opts,
+                        asset_type=asset_type,
                     )
                 except Exception as exc:
                     _log.error("Export failed for %s: %s", comp_name, exc)

@@ -1,5 +1,5 @@
 {
-  "extensions": ["fbx", "ma", "usda", "usd", "obj"],
+  "extensions": ["abc", "fbx", "ma", "usda", "usd", "obj"],
   "assets": [
     {
       "name": "Camera",
