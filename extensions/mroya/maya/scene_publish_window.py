@@ -790,18 +790,19 @@ class PublisherSetupWindow(QtWidgets.QDialog):
         comps = None if self._node_has_components() else adef.get("components", [])
         self._write_asset_to_node(asset_name, "", components=comps)
 
-        # Store asset_type on the node
+        # Store asset_type on the node — use the full name (e.g. "Geometry", "Rig")
+        # so the publisher can look it up as an ftrack AssetType by name.
         if MAYA_AVAILABLE:
             if not cmds.attributeQuery("asset_type", node=self._node, exists=True):
                 cmds.addAttr(self._node, longName="asset_type", dataType="string")
             cmds.setAttr(
-                f"{self._node}.asset_type", adef.get("type", ""), type="string"
+                f"{self._node}.asset_type", adef.get("name", ""), type="string"
             )
         self._update_camera_combo()
 
         print(
             f"[Publisher Setup] Applied new asset '{asset_name}' "
-            f"(type: {adef.get('type', '')}, components: {comps})"
+            f"(type: {adef.get('name', '')}, components: {comps})"
         )
 
     # ------------------------------------------------------------------
