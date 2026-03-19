@@ -18,34 +18,31 @@ _HUD_NAMES = [
 
 # ── camera helpers ────────────────────────────────────────────────────────────
 
+_ORTHO_CAMERAS = {'top', 'topShape', 'front', 'frontShape', 'side', 'sideShape', 'bottom', 'bottomShape'}
+
+
 def _active_camera_transform() -> str:
-    """Return the transform name of the camera in the focused model panel."""
+    """Return the transform of the active non-orthographic camera.
+
+    Prefers the focused panel if it holds a non-ortho camera; otherwise
+    scans all model panels for the first non-ortho camera; falls back to persp.
+    """
     try:
         panel = cmds.getPanel(withFocus=True)
         if panel and cmds.getPanel(typeOf=panel) == 'modelPanel':
-            cam = cmds.modelEditor(panel, q=True, camera=True)
-            if cam:
+            cam = cmds.modelEditor(panel, q=True, camera=True) or ''
+            if cam.split('|')[-1] not in _ORTHO_CAMERAS:
                 return cam
     except Exception:
         pass
-    # Fallback: first model panel found
     try:
         for p in cmds.getPanel(type='modelPanel') or []:
-            cam = cmds.modelEditor(p, q=True, camera=True)
-            if cam:
+            cam = cmds.modelEditor(p, q=True, camera=True) or ''
+            if cam.split('|')[-1] not in _ORTHO_CAMERAS:
                 return cam
     except Exception:
         pass
-    return ''
-
-
-def _hud_camera_name() -> str:
-    """HUD callback: short name of the active camera."""
-    try:
-        cam = _active_camera_transform()
-        return cam.split('|')[-1] if cam else '—'
-    except Exception:
-        return '—'
+    return 'persp'
 
 
 def _hud_focal_length() -> str:
@@ -65,11 +62,7 @@ def _hud_focal_length() -> str:
 # ── ftrack helpers ────────────────────────────────────────────────────────────
 
 def _fetch_ftrack_context() -> tuple[str, str, str]:
-    """Return (project_name, parent_name, task_name) from the current context.
-
-    Queries as Task (the typical FTRACK_CONTEXTID entity type).
-    Falls back to empty strings on any error.
-    """
+    """Return (project_name, parent_name, task_name) from the current context."""
     task_id = os.environ.get('FTRACK_CONTEXTID', '')
     if not task_id:
         return '', '', ''
@@ -91,7 +84,6 @@ def _fetch_ftrack_context() -> tuple[str, str, str]:
             task_name    = task.get('name', '')
             return project_name, parent_name, task_name
 
-        # Fallback: might be a Shot/Sequence context, not a Task
         ctx = session.query(
             f'select name, parent.name '
             f'from Context where id is "{task_id}"'
@@ -128,17 +120,14 @@ def install_hud() -> None:
 
     task_label = f'{shot_name} / {task_name}' if (shot_name and task_name) else (shot_name or task_name)
 
-    # Section 5 = top-right.  Use nextFreeBlock so we never clash with
-    # Maya's built-in HUDs that may already occupy fixed block numbers.
-    section = 5
+    section = 5  # top-right
 
     _static = [
-        ('MroyaHUD_Project',  f'Project:  {project_name}',  None,              None),
-        ('MroyaHUD_Shot',     f'Task:     {task_label}',    None,              None),
-        ('MroyaHUD_User',     f'User:     {user}',          None,              None),
+        ('MroyaHUD_Project',  f'Project:  {project_name}', None,              None),
+        ('MroyaHUD_Shot',     f'Task:     {task_label}',   None,              None),
+        ('MroyaHUD_User',     f'User:     {user}',         None,              None),
     ]
     _dynamic = [
-        ('MroyaHUD_Camera',   'Camera:    ', _hud_camera_name,  'SelectionChanged'),
         ('MroyaHUD_FocalLen', 'Focal:     ', _hud_focal_length, 'timeChanged'),
     ]
 
@@ -150,6 +139,16 @@ def install_hud() -> None:
         else:
             kwargs['label'] = label
         cmds.headsUpDisplay(hud_name, **kwargs)
+
+    # Camera name — use Maya's built-in 'cameraNames' preset so it updates live.
+    block = cmds.headsUpDisplay(nextFreeBlock=section)
+    cmds.headsUpDisplay(
+        'MroyaHUD_Camera',
+        section=section, block=block,
+        blockSize='small', labelFontSize='large',
+        label='Camera:    ',
+        pre='cameraNames',
+    )
 
     _log.info(
         'Mroya HUD installed — project=%r  parent=%r  task=%r  user=%r',

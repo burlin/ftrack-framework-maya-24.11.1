@@ -57,36 +57,31 @@ def create_playblast(
 
     cmds.setAttr("defaultRenderGlobals.imageFormat", 8)  # QuickTime (.mov)
 
-    cmds.headsUpDisplay(
-        "CameraHUD",
-        section=5,
-        block=9,
-        blockSize="small",
-        label="Current Frame:",
-        labelFontSize="large",
-        pre="currentFrame",
-    )
+    # Enable Maya's native camera-name HUD; restore previous state after blast.
+    prev_cam_hud = cmds.headsUpDisplay("HUDCameraNames", query=True, visible=True)
+    cmds.headsUpDisplay("HUDCameraNames", edit=True, visible=True)
 
     st = start_frame if start_frame is not None else cmds.playbackOptions(q=True, min=True)
     et = end_frame if end_frame is not None else cmds.playbackOptions(q=True, max=True)
 
-    result_path = cmds.playblast(
-        st=st,
-        et=et,
-        format="qt",
-        filename=temp_file_path,
-        width=width,
-        height=height,
-        showOrnaments=True,
-        percent=100,
-        compression="photo - JPEG",
-        quality=100,
-        viewer=False,
-        offScreen=True,
-        fo=True,
-    )
-
-    cmds.headsUpDisplay("CameraHUD", remove=True)
+    try:
+        result_path = cmds.playblast(
+            st=st,
+            et=et,
+            format="qt",
+            filename=temp_file_path,
+            width=width,
+            height=height,
+            showOrnaments=True,
+            percent=100,
+            compression="photo - JPEG",
+            quality=100,
+            viewer=False,
+            offScreen=True,
+            fo=True,
+        )
+    finally:
+        cmds.headsUpDisplay("HUDCameraNames", edit=True, visible=prev_cam_hud)
 
     _log.info("Created playblast: %s (camera: %s)", result_path, camera)
     return result_path
