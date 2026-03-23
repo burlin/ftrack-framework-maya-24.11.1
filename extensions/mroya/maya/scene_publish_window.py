@@ -276,7 +276,7 @@ def _get_component_defaults(asset_type: str, ext: str) -> dict:
     base = dict(_FORMAT_DEFAULTS.get(ext, {}))
     json_path = Path(__file__).resolve().parents[3] / "resource" / "export_defaults.json"
     try:
-        with open(json_path, "r") as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         for key, val in data.items():
             if key.startswith("_"):

@@ -35,7 +35,7 @@ def _load_export_defaults() -> dict:
         return _DEFAULTS_CACHE
     json_path = Path(__file__).resolve().parents[3] / "resource" / "export_defaults.json"
     try:
-        with open(json_path, "r") as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             _DEFAULTS_CACHE = json.load(f)
         _log.info("Loaded export_defaults.json from %s", json_path)
     except Exception as exc:
@@ -164,20 +164,32 @@ def _export_fbx_strip_namespaces(
 
             new_root_name = actual_name  # last iteration = root (shortest path)
 
+        # Resolve the duplicate root's full DAG path after all renames.
+        dup_root_long = cmds.ls(new_root_name, long=True)
+        dup_root_long = dup_root_long[0] if dup_root_long else new_root_name
+
+        # Build a mapping: clean short name -> full DAG path in the duplicate.
+        # Using full paths avoids resolving to the wrong node when the scene
+        # has other nodes sharing the same short name as the cleaned duplicates.
+        all_dup_nodes = cmds.listRelatives(dup_root_long, allDescendents=True, fullPath=True) or []
+        all_dup_nodes.append(dup_root_long)
+        dup_by_short = {n.split("|")[-1]: n for n in all_dup_nodes}
+
         original_hierarchy = cmds.listRelatives(root, allDescendents=True, fullPath=True) or []
         original_hierarchy.append(root)
 
         for orig in original_hierarchy:
-            clean_target = orig.split("|")[-1].split(":")[-1]
-            if cmds.objExists(clean_target) and clean_target != orig:
+            clean_short = orig.split("|")[-1].split(":")[-1]
+            dup_full = dup_by_short.get(clean_short)
+            if dup_full and cmds.objExists(dup_full):
                 try:
-                    con = cmds.parentConstraint(orig, clean_target, mo=False)
-                    scl = cmds.scaleConstraint(orig, clean_target, mo=False)
+                    con = cmds.parentConstraint(orig, dup_full, mo=False)
+                    scl = cmds.scaleConstraint(orig, dup_full, mo=False)
                     constraints.extend([con[0], scl[0]])
                 except RuntimeError:
                     pass
 
-        cmds.select(new_root_name, hierarchy=True)
+        cmds.select(dup_root_long, hierarchy=True)
         cmds.bakeResults(
             cmds.ls(selection=True),
             time=(bake_start, bake_end),

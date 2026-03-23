@@ -1,5 +1,5 @@
 {
-  "_comment": "Default export options per asset type and file extension. These are the base defaults — any options saved on the publish node override them. Keys match the option names used by each exporter.",
+  "_comment": "Default export options per asset type and file extension. Base defaults - any options saved on the publish node override them. Keys match the option names used by each exporter.",
 
   "Rig": {
     "fbx": {
